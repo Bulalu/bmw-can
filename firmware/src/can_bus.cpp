@@ -18,7 +18,7 @@ void CanBus::begin(const Config& cfg) {
 
   twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT((gpio_num_t)cfg.can_tx,
                                                               (gpio_num_t)cfg.can_rx,
-                                                              TWAI_MODE_NORMAL);
+                                                              TWAI_MODE_LISTEN_ONLY);
   // Increase RX queue length a bit for bursty traffic
   g_config.rx_queue_len = 32;
   g_config.tx_queue_len = 8;

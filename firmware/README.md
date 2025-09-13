@@ -57,3 +57,6 @@ Runtime CLI over Serial (early stub):
 - `platformio.ini` — build environments
 
 > Implemented: TWAI init/RX, UDP send, CLI set/save/reboot, NVS persistence, runtime UDP reconnect, and self-test generator.
+
+## Notes
+- The CAN controller runs in listen-only mode (no ACK, no transmit). Safe for tapping an active vehicle bus.

@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "client-core",
+    "client-udp",
+    "client-tui",
+]
+resolver = "2"
+

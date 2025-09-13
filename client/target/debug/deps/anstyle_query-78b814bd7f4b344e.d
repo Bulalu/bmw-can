@@ -1,0 +1,8 @@
+/Users/elishabulalu/Desktop/ctrlX/bmw-can/client/target/debug/deps/libanstyle_query-78b814bd7f4b344e.rmeta: /Users/elishabulalu/.cargo/registry/src/index.crates.io-6f17d22bba15001f/anstyle-query-1.1.4/src/lib.rs /Users/elishabulalu/.cargo/registry/src/index.crates.io-6f17d22bba15001f/anstyle-query-1.1.4/src/windows.rs
+
+/Users/elishabulalu/Desktop/ctrlX/bmw-can/client/target/debug/deps/libanstyle_query-78b814bd7f4b344e.rlib: /Users/elishabulalu/.cargo/registry/src/index.crates.io-6f17d22bba15001f/anstyle-query-1.1.4/src/lib.rs /Users/elishabulalu/.cargo/registry/src/index.crates.io-6f17d22bba15001f/anstyle-query-1.1.4/src/windows.rs
+
+/Users/elishabulalu/Desktop/ctrlX/bmw-can/client/target/debug/deps/anstyle_query-78b814bd7f4b344e.d: /Users/elishabulalu/.cargo/registry/src/index.crates.io-6f17d22bba15001f/anstyle-query-1.1.4/src/lib.rs /Users/elishabulalu/.cargo/registry/src/index.crates.io-6f17d22bba15001f/anstyle-query-1.1.4/src/windows.rs
+
+/Users/elishabulalu/.cargo/registry/src/index.crates.io-6f17d22bba15001f/anstyle-query-1.1.4/src/lib.rs:
+/Users/elishabulalu/.cargo/registry/src/index.crates.io-6f17d22bba15001f/anstyle-query-1.1.4/src/windows.rs:

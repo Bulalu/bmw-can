@@ -12,6 +12,10 @@ This directory contains a PlatformIO project for the ESP32 CAN sniffer/forwarder
   - K-CAN (100 kbps): `pio run -e esp32dev-kcan`
 - Upload (example PT-CAN): `pio run -t upload -e esp32dev-ptcan`
 - Serial monitor: `pio device monitor -b 115200`
+  
+Host listener options:
+- Quick check with netcat: `nc -u -l 45454`
+- Python helper (parsed output): `python3 tools/udp_recv.py --port 45454`
 
 ## Configuration
 Defaults via build flags in `platformio.ini`:
@@ -43,6 +47,8 @@ Runtime CLI over Serial (early stub):
 - `save` — persist to NVS (survives reboot)
 - `net reconnect` — reapply Wi‑Fi/UDP without reboot
 - `reboot` — restart device
+- `selftest on|off` — enable/disable synthetic frames
+- `selftest once <n>` — emit N frames immediately for testing
 
 ## Layout
 - `src/main.cpp` — boot & wiring
@@ -50,5 +56,4 @@ Runtime CLI over Serial (early stub):
 - `src/*.cpp` — stub implementations
 - `platformio.ini` — build environments
 
-> Next steps: implement TWAI (CAN) init/read, Wi‑Fi + UDP send, and a simple CLI to set host/port and CAN bitrate, then persist via NVS.
-> Implemented: TWAI init/RX, UDP send, CLI set/save/reboot, NVS persistence, and runtime UDP reconnect.
+> Implemented: TWAI init/RX, UDP send, CLI set/save/reboot, NVS persistence, runtime UDP reconnect, and self-test generator.

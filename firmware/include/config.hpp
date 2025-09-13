@@ -18,18 +18,31 @@
 #endif
 
 #ifndef UDP_HOST
-#define UDP_HOST "192.168.1.100"
+#define UDP_HOST "192.168.1.5"
 #endif
 
 struct Config {
   uint32_t can_bps;
   uint8_t can_tx;
   uint8_t can_rx;
-  const char* udp_host;
+  String udp_host;
   uint16_t udp_port;
+  String wifi_ssid;
+  String wifi_pass;
 };
 
 inline Config defaultConfig() {
-  return Config{CAN_BPS, CAN_TX, CAN_RX, UDP_HOST, UDP_PORT};
+  Config c;
+  c.can_bps = CAN_BPS;
+  c.can_tx = CAN_TX;
+  c.can_rx = CAN_RX;
+  c.udp_host = String(UDP_HOST);
+  c.udp_port = UDP_PORT;
+#ifdef WIFI_SSID
+  c.wifi_ssid = String(WIFI_SSID);
+#endif
+#ifdef WIFI_PASS
+  c.wifi_pass = String(WIFI_PASS);
+#endif
+  return c;
 }
-

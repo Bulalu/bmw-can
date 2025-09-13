@@ -15,5 +15,7 @@ class CanBus {
   void begin(const Config& cfg);
   // Poll for frames; call onFrame for each received frame.
   void tick(const std::function<void(const Frame&)>& onFrame);
-};
 
+ private:
+  bool started_{false};
+};

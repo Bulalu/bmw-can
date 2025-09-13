@@ -18,12 +18,31 @@ Defaults via build flags in `platformio.ini`:
 - `CAN_BPS` (500000 or 100000)
 - `CAN_TX` (default 13)
 - `CAN_RX` (default 5)
-- `UDP_HOST` (default "192.168.1.100")
+- `UDP_HOST` (default "192.168.1.5")
 - `UDP_PORT` (default 45454)
+
+Optional Wi‑Fi credentials for auto-connect (add to env build_flags):
+- `WIFI_SSID` and `WIFI_PASS`
+
+Example:
+```
+build_flags =
+  -DCAN_BPS=500000
+  -DCAN_TX=13
+  -DCAN_RX=5
+  -DUDP_PORT=45454
+  -DUDP_HOST=\"192.168.1.5\"
+  -DWIFI_SSID=\"YourSSID\"
+  -DWIFI_PASS=\"YourPass\"
+```
 
 Runtime CLI over Serial (early stub):
 - `help` — list commands
 - `get` — print current config
+- `set <key> <value>` — keys: `can_bps`, `host`, `port`, `wifi_ssid`, `wifi_pass`
+- `save` — persist to NVS (survives reboot)
+- `net reconnect` — reapply Wi‑Fi/UDP without reboot
+- `reboot` — restart device
 
 ## Layout
 - `src/main.cpp` — boot & wiring
@@ -32,3 +51,4 @@ Runtime CLI over Serial (early stub):
 - `platformio.ini` — build environments
 
 > Next steps: implement TWAI (CAN) init/read, Wi‑Fi + UDP send, and a simple CLI to set host/port and CAN bitrate, then persist via NVS.
+> Implemented: TWAI init/RX, UDP send, CLI set/save/reboot, NVS persistence, and runtime UDP reconnect.

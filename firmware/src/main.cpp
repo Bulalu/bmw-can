@@ -3,6 +3,7 @@
 #include "can_bus.hpp"
 #include "net_udp.hpp"
 #include "cli.hpp"
+#include "config_store.hpp"
 
 static Config g_cfg;
 static CanBus g_can;
@@ -16,6 +17,8 @@ void setup() {
   Serial.println("BMW-CAN ESP32 firmware scaffold");
 
   g_cfg = defaultConfig();
+  // Load persisted overrides (if present)
+  cfgstore::load(g_cfg);
   g_udp.begin(g_cfg);
   g_can.begin(g_cfg);
   g_cli = new Cli(g_cfg, g_can, g_udp);
@@ -30,4 +33,3 @@ void loop() {
   });
   delay(10);
 }
-

@@ -5,23 +5,31 @@ void NetUdp::begin(const Config& cfg) {
   port_ = cfg.udp_port;
 
   WiFi.mode(WIFI_STA);
+  String ssid = cfg.wifi_ssid;
+  String pass = cfg.wifi_pass;
 #ifdef WIFI_SSID
-  Serial.printf("[WiFi] Connecting to %s...\n", WIFI_SSID);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
-    delay(300);
-    Serial.print(".");
-  }
-  Serial.println();
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("[WiFi] Connected. IP: %s\n", WiFi.localIP().toString().c_str());
-  } else {
-    Serial.println("[WiFi] Not connected (timeout). Will still attempt UDP sends.");
-  }
-#else
-  Serial.println("[WiFi] WIFI_SSID not defined. Skipping Wi-Fi connect.");
+  if (ssid.isEmpty()) ssid = WIFI_SSID;
 #endif
+#ifdef WIFI_PASS
+  if (pass.isEmpty()) pass = WIFI_PASS;
+#endif
+  if (!ssid.isEmpty()) {
+    Serial.printf("[WiFi] Connecting to %s...\n", ssid.c_str());
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    unsigned long start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
+      delay(300);
+      Serial.print(".");
+    }
+    Serial.println();
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.printf("[WiFi] Connected. IP: %s\n", WiFi.localIP().toString().c_str());
+    } else {
+      Serial.println("[WiFi] Not connected (timeout). Will still attempt UDP sends.");
+    }
+  } else {
+    Serial.println("[WiFi] No SSID configured. Set via CLI: set wifi_ssid <ssid>; set wifi_pass <pass>; save; net reconnect");
+  }
   udp_.begin(0); // random local port
   Serial.printf("[UDP] Remote %s:%u\n", cfg.udp_host.c_str(), cfg.udp_port);
 }

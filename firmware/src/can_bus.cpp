@@ -40,14 +40,30 @@ void CanBus::begin(const Config& cfg) {
 
 void CanBus::tick(const std::function<void(const Frame&)>& onFrame) {
   if (!started_) return;
-  twai_message_t msg;
-  // Non-blocking poll
-  if (twai_receive(&msg, 0) == ESP_OK) {
+
+  // Drain RX queue without blocking; no filtering (ACCEPT_ALL)
+  for (;;) {
+    twai_message_t msg;
+    if (twai_receive(&msg, 0) != ESP_OK) break;
     Frame f;
     f.id = msg.identifier;
     f.dlc = msg.data_length_code;
     for (uint8_t i = 0; i < f.dlc && i < 8; ++i) f.data[i] = msg.data[i];
     f.ts_us = micros();
     onFrame(f);
+  }
+
+  // Lightweight status log on bus errors (throttled)
+  static unsigned long last_status_ms = 0;
+  unsigned long now = millis();
+  if (now - last_status_ms > 1000) {
+    twai_status_info_t st;
+    if (twai_get_status_info(&st) == ESP_OK) {
+      if (st.state == TWAI_STATE_BUS_OFF || st.rx_missed_count > 0 || st.rx_overrun_count > 0) {
+        Serial.printf("[CAN] state=%d rx=%u rx_missed=%u rx_overrun=%u bus_err=%u\n",
+                      (int)st.state, st.msgs_to_rx, st.rx_missed_count, st.rx_overrun_count, st.bus_error_count);
+      }
+    }
+    last_status_ms = now;
   }
 }

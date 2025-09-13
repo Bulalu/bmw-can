@@ -1,0 +1,40 @@
+# macOS / editor
+.DS_Store
+.idea/
+.vscode/
+.ropeproject/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+# PlatformIO (firmware)
+**/.pio/
+**/.pioenvs/
+**/.clangd/
+*.elf
+*.bin
+*.map
+
+# Rust
+target/
+**/target/
+
+# Logs / temp
+logs/
+*.log
+out.json
+
+# Env files
+.env
+.env.*
+.envrc
+

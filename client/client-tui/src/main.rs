@@ -2,8 +2,9 @@ use anyhow::Result;
 use clap::Parser;
 use client_core::Frame;
 use client_udp::{run_udp_listener, UdpConfig};
-use crossterm::event::{self, Event, KeyCode};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::execute;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
@@ -54,9 +55,12 @@ async fn main() -> Result<()> {
     });
 
     enable_raw_mode()?;
+    execute!(stdout(), EnterAlternateScreen, EnableMouseCapture)?;
     let mut term = init_terminal()?;
+    term.clear()?;
     let res = run_app(&mut term, &mut rx, args.tail).await;
     disable_raw_mode()?;
+    execute!(stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
     term.show_cursor()?;
     if let Err(e) = res { eprintln!("{e:?}"); }
     Ok(())

@@ -1,9 +1,10 @@
 #include "cli.hpp"
 #include "config_store.hpp"
+#include <driver/twai.h>
 #include <vector>
 
-Cli::Cli(Config& cfg, CanBus& can, NetUdp& udp, SelfTest& st)
-    : cfg_(cfg), can_(can), udp_(udp), st_(st) {}
+Cli::Cli(Config& cfg, CanBus& can, NetUdp& udp, SelfTest& st, bool& rawSerialFlag)
+    : cfg_(cfg), can_(can), udp_(udp), st_(st), raw_serial_(rawSerialFlag) {}
 
 void Cli::tick() {
   while (Serial.available()) {
@@ -29,9 +30,11 @@ void Cli::handleLine(const String& line) {
     Serial.println("  set <key> <value>   # keys: can_bps, host, port, wifi_ssid, wifi_pass");
     Serial.println("  save                # persist to NVS");
     Serial.println("  net reconnect       # reapply Wi‑Fi/UDP without reboot");
+    Serial.println("  can status          # print TWAI status once");
     Serial.println("  reboot");
     Serial.println("  selftest on|off     # generate synthetic frames");
     Serial.println("  selftest once <n>   # emit N frames immediately");
+    Serial.println("  raw on|off          # print raw frames over serial");
     return;
   }
   if (line == "save") {
@@ -48,6 +51,29 @@ void Cli::handleLine(const String& line) {
   if (line == "net reconnect") {
     udp_.begin(cfg_);
     Serial.println("Network reconfigured.");
+    return;
+  }
+
+  if (line == "can status") {
+    twai_status_info_t st;
+    if (twai_get_status_info(&st) == ESP_OK) {
+      Serial.printf("state=%d msgs_to_rx=%u rx_missed=%u rx_overrun=%u bus_err=%u tx_err=%u rx_err=%u\n",
+                    (int)st.state, st.msgs_to_rx, st.rx_missed_count, st.rx_overrun_count,
+                    st.bus_error_count, st.tx_error_counter, st.rx_error_counter);
+    } else {
+      Serial.println("CAN status read failed");
+    }
+    return;
+  }
+
+  if (line == "raw on") {
+    raw_serial_ = true;
+    Serial.println("raw serial ON");
+    return;
+  }
+  if (line == "raw off") {
+    raw_serial_ = false;
+    Serial.println("raw serial OFF");
     return;
   }
 

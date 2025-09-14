@@ -9,7 +9,8 @@ Live client to receive UDP frames from the ESP32 firmware, show a TUI, and later
 
 ## Build & Run
 - From repo root or `client/` directory:
-  - `cargo run -p client-tui -- --host 0.0.0.0 --port 45454 --dbc ../dbc/bmw_e90.dbc`
+  - Demo (fake data): `cargo run -p client-tui -- --demo`
+  - UDP (from firmware): `cargo run -p client-tui -- --host 0.0.0.0 --port 45454 --dbc ../dbc/bmw_e90.dbc`
 - Quit TUI: press `q`
 
 ## Next Steps

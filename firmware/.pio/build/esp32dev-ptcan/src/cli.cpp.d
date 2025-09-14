@@ -191,4 +191,7 @@
  /Users/elishabulalu/.platformio/packages/framework-arduinoespressif32@src-0c9bc5a2e917d2a24b2fba29cb704cc7/libraries/WiFi/src/WiFiServer.h \
  /Users/elishabulalu/.platformio/packages/framework-arduinoespressif32@src-0c9bc5a2e917d2a24b2fba29cb704cc7/libraries/WiFi/src/WiFiUdp.h \
  /Users/elishabulalu/.platformio/packages/framework-arduinoespressif32@src-0c9bc5a2e917d2a24b2fba29cb704cc7/libraries/Network/src/NetworkUdp.h \
- include/selftest.hpp include/config_store.hpp
+ include/selftest.hpp include/config_store.hpp \
+ /Users/elishabulalu/.platformio/packages/framework-arduinoespressif32-libs/esp32/include/driver/twai/include/driver/twai.h \
+ /Users/elishabulalu/.platformio/packages/framework-arduinoespressif32-libs/esp32/include/esp_common/include/esp_types.h \
+ /Users/elishabulalu/.platformio/packages/framework-arduinoespressif32-libs/esp32/include/hal/include/hal/twai_types.h

@@ -35,6 +35,7 @@ void NetUdp::begin(const Config& cfg) {
 }
 
 void NetUdp::sendFrame(const Frame& f) {
+  if (WiFi.status() != WL_CONNECTED) return;
   char line[96];
   // ts_us,id,dlc,data_hex
   int n = snprintf(line, sizeof(line), "%llu,0x%X,%u,",

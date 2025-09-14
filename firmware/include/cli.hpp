@@ -7,7 +7,7 @@
 
 class Cli {
  public:
-  Cli(Config& cfg, CanBus& can, NetUdp& udp, SelfTest& st);
+  Cli(Config& cfg, CanBus& can, NetUdp& udp, SelfTest& st, bool& rawSerialFlag);
   void tick();
 
  private:
@@ -15,6 +15,7 @@ class Cli {
   CanBus& can_;
   NetUdp& udp_;
   SelfTest& st_;
+  bool& raw_serial_;
   String buf_;
   void handleLine(const String& line);
 };

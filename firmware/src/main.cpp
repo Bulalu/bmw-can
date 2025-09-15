@@ -20,8 +20,12 @@ void setup() {
   Serial.println("BMW-CAN ESP32 firmware scaffold");
 
   g_cfg = defaultConfig();
+#ifndef DISABLE_NVS
   // Load persisted overrides (if present)
   cfgstore::load(g_cfg);
+#else
+  Serial.println("[CFG] NVS disabled at build time (DISABLE_NVS)");
+#endif
   g_udp.begin(g_cfg);
   g_can.begin(g_cfg);
   g_cli = new Cli(g_cfg, g_can, g_udp, g_self, g_raw_serial);

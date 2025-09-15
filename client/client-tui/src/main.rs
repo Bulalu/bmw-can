@@ -22,8 +22,12 @@ use tokio::time::{self, Duration, Instant};
 struct Args {
     #[arg(long, default_value = "0.0.0.0")] 
     host: String,
+    /// KCAN UDP port
     #[arg(long, default_value_t = 45454)]
-    port: u16,
+    kcan_port: u16,
+    /// PTCAN UDP port
+    #[arg(long, default_value_t = 45455)]
+    ptcan_port: u16,
     /// Path to DBC file (unused in MVP, reserved for next step)
     #[arg(long, default_value = "../dbc/bmw_e90.dbc")]
     dbc: String,
@@ -44,12 +48,21 @@ enum Panel {
     Logs,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BusTab { All, KCAN, PTCAN }
+
 struct AppState {
-    frames: Vec<Frame>,
+    frames_all: Vec<Frame>,
+    frames_kcan: Vec<Frame>,
+    frames_ptcan: Vec<Frame>,
     recv_count: u64,
     last_tick: Instant,
     pps: f32,
     total: u64,
+    pps_k: f32,
+    pps_p: f32,
+    recv_k: u64,
+    recv_p: u64,
     paused: bool,
     logging: bool,
     show_help: bool,
@@ -64,16 +77,23 @@ struct AppState {
     rpm_hist: Vec<f64>,
     speed_hist: Vec<f64>,
     thr_hist: Vec<f64>,
+    bus_tab: BusTab,
 }
 
 impl AppState {
     fn new(status_socket: String) -> Self {
         Self {
-            frames: Vec::with_capacity(1024),
+            frames_all: Vec::with_capacity(1024),
+            frames_kcan: Vec::with_capacity(1024),
+            frames_ptcan: Vec::with_capacity(1024),
             recv_count: 0,
             last_tick: Instant::now(),
             pps: 0.0,
             total: 0,
+            pps_k: 0.0,
+            pps_p: 0.0,
+            recv_k: 0,
+            recv_p: 0,
             paused: false,
             logging: false,
             show_help: false,
@@ -87,6 +107,7 @@ impl AppState {
             rpm_hist: Vec::with_capacity(256),
             speed_hist: Vec::with_capacity(256),
             thr_hist: Vec::with_capacity(256),
+            bus_tab: BusTab::All,
         }
     }
 }
@@ -95,7 +116,7 @@ impl AppState {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    let (tx, mut rx) = mpsc::channel::<Frame>(4096);
+    let (tx, mut rx) = mpsc::channel::<(BusTab, Frame)>(8192);
     if args.demo {
         // Demo generator task
         let tx_demo = tx.clone();
@@ -108,16 +129,36 @@ async fn main() -> Result<()> {
                 ts += 50_000; // ~20 Hz
                 let mut data = [0u8; 8];
                 for i in 0..8 { data[i] = counter.wrapping_add(i as u8); }
-                let _ = tx_demo.send(Frame { ts_us: ts, id: ids[idx], dlc: 8, data }).await;
+                let _ = tx_demo.send((BusTab::All, Frame { ts_us: ts, id: ids[idx], dlc: 8, data })).await;
                 counter = counter.wrapping_add(1);
                 idx = (idx + 1) % ids.len();
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         });
     } else {
-        let udp_cfg = UdpConfig { host: args.host.clone(), port: args.port };
+        // KCAN listener
+        let tx_k = tx.clone();
+        let host_k = args.host.clone();
+        let k_port = args.kcan_port;
         tokio::spawn(async move {
-            let _ = run_udp_listener(udp_cfg, tx).await;
+            let (inner_tx, mut inner_rx) = mpsc::channel::<Frame>(4096);
+            let cfg = UdpConfig { host: host_k, port: k_port };
+            tokio::spawn(async move { let _ = run_udp_listener(cfg, inner_tx).await; });
+            while let Some(f) = inner_rx.recv().await {
+                let _ = tx_k.send((BusTab::KCAN, f)).await;
+            }
+        });
+        // PTCAN listener
+        let tx_p = tx.clone();
+        let host_p = args.host.clone();
+        let p_port = args.ptcan_port;
+        tokio::spawn(async move {
+            let (inner_tx, mut inner_rx) = mpsc::channel::<Frame>(4096);
+            let cfg = UdpConfig { host: host_p, port: p_port };
+            tokio::spawn(async move { let _ = run_udp_listener(cfg, inner_tx).await; });
+            while let Some(f) = inner_rx.recv().await {
+                let _ = tx_p.send((BusTab::PTCAN, f)).await;
+            }
         });
     }
 
@@ -125,7 +166,11 @@ async fn main() -> Result<()> {
     execute!(stdout(), EnterAlternateScreen, EnableMouseCapture)?;
     let mut term = init_terminal()?;
     term.clear()?;
-    let status_socket = if args.demo { String::from("demo") } else { format!("{}:{}", args.host, args.port) };
+    let status_socket = if args.demo {
+        String::from("demo")
+    } else {
+        format!("{} [K:{} | P:{}]", args.host, args.kcan_port, args.ptcan_port)
+    };
     let res = run_app(&mut term, &mut rx, args.tail, status_socket, args.demo).await;
     disable_raw_mode()?;
     execute!(stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
@@ -142,7 +187,7 @@ fn init_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
 
 async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    rx: &mut mpsc::Receiver<Frame>,
+    rx: &mut mpsc::Receiver<(BusTab, Frame)>,
     tail_max: usize,
     status_socket: String,
     demo_mode: bool,
@@ -153,14 +198,16 @@ async fn run_app(
     loop {
         // Non-blocking drain of frames
         if !app.paused {
-            while let Ok(frame) = rx.try_recv() {
+            while let Ok((bus, frame)) = rx.try_recv() {
                 app.recv_count += 1;
                 app.total += 1;
-                app.frames.push(frame);
-                if app.frames.len() > tail_max {
-                    let excess = app.frames.len() - tail_max;
-                    app.frames.drain(0..excess);
+                app.frames_all.push(frame.clone());
+                match bus {
+                    BusTab::KCAN => { app.recv_k += 1; app.frames_kcan.push(frame); if app.frames_kcan.len() > tail_max { let ex = app.frames_kcan.len()-tail_max; app.frames_kcan.drain(0..ex); } },
+                    BusTab::PTCAN => { app.recv_p += 1; app.frames_ptcan.push(frame); if app.frames_ptcan.len() > tail_max { let ex = app.frames_ptcan.len()-tail_max; app.frames_ptcan.drain(0..ex); } },
+                    BusTab::All => { /* demo */ },
                 }
+                if app.frames_all.len() > tail_max { let ex = app.frames_all.len()-tail_max; app.frames_all.drain(0..ex); }
             }
         }
 
@@ -176,8 +223,11 @@ async fn run_app(
 
         // Update PPS every second
         if app.last_tick.elapsed() >= Duration::from_secs(1) {
-            app.pps = app.recv_count as f32 / app.last_tick.elapsed().as_secs_f32();
-            app.recv_count = 0;
+            let secs = app.last_tick.elapsed().as_secs_f32();
+            app.pps = app.recv_count as f32 / secs;
+            app.pps_k = app.recv_k as f32 / secs;
+            app.pps_p = app.recv_p as f32 / secs;
+            app.recv_count = 0; app.recv_k = 0; app.recv_p = 0;
             app.last_tick = Instant::now();
         }
 
@@ -194,9 +244,9 @@ async fn run_app(
 
             // Status bar
             let status = format!(
-                "BMW-CAN Client  |  {}  |  PPS: {:.1}  |  Total: {}  |  Logging: {}  |  Filter: {}",
-                if app.demo { String::from("MODE: demo") } else { format!("UDP: listening {}", app.status_socket) },
-                app.pps,
+                "BMW-CAN Client  |  {}  |  PPS: {:.1} (K:{:.1} P:{:.1})  |  Total: {}  |  Logging: {}  |  Filter: {}",
+                if app.demo { String::from("MODE: demo") } else { format!("UDP: {}", app.status_socket) },
+                app.pps, app.pps_k, app.pps_p,
                 app.total,
                 if app.logging {"on"} else {"off"},
                 if app.filter.is_empty() {"(none)".to_string()} else {app.filter.clone()}
@@ -232,17 +282,29 @@ async fn run_app(
             // Content render based on panel
             match app.panel {
                 Panel::Raw => {
-                    let items: Vec<ListItem> = app
-                        .frames
-                        .iter()
-                        .rev()
+                    // Bus tabs inside Raw panel
+                    let bus_titles = ["All", "K-CAN", "PT-CAN"].iter().map(|t| Line::from(Span::raw(*t))).collect::<Vec<_>>();
+                    let mut btabs = Tabs::new(bus_titles)
+                        .block(Block::default().borders(Borders::ALL).title("Bus"))
+                        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+                    let bi = match app.bus_tab { BusTab::All => 0, BusTab::KCAN => 1, BusTab::PTCAN => 2 };
+                    btabs = btabs.select(bi);
+                    let inner = Layout::default().direction(Direction::Vertical).constraints([Constraint::Length(3), Constraint::Min(1)]).split(body_chunks[1]);
+                    f.render_widget(btabs, inner[0]);
+
+                    let iter_src: Box<dyn Iterator<Item=&Frame>> = match app.bus_tab {
+                        BusTab::All => Box::new(app.frames_all.iter().rev()),
+                        BusTab::KCAN => Box::new(app.frames_kcan.iter().rev()),
+                        BusTab::PTCAN => Box::new(app.frames_ptcan.iter().rev()),
+                    };
+                    let items: Vec<ListItem> = iter_src
                         .filter(|fr| match_filter(fr, &app.filter))
                         .take(500)
                         .map(|fr| ListItem::new(fr.to_csv_line()))
                         .collect();
                     let list = List::new(items)
                         .block(Block::default().borders(Borders::ALL).title("Raw Frames (latest first)"));
-                    f.render_widget(list, body_chunks[1]);
+                    f.render_widget(list, inner[1]);
                 }
                 Panel::Dashboard => {
                     let rows = Layout::default()
@@ -389,11 +451,12 @@ async fn run_app(
                         KeyCode::Esc => { app.show_help = false; },
                         KeyCode::Char('?') => { app.show_help = !app.show_help; },
                         KeyCode::Char('/') => { app.input_mode = true; app.input_buf.clear(); },
-                        KeyCode::Char('c') => { app.frames.clear(); },
+                        KeyCode::Char('c') => { app.frames_all.clear(); app.frames_kcan.clear(); app.frames_ptcan.clear(); },
                         KeyCode::Char('p') => { app.paused = !app.paused; },
                         KeyCode::Char('l') => { app.logging = !app.logging; },
                         KeyCode::Tab | KeyCode::Char('\t') | KeyCode::Right => { app.panel = next_panel(app.panel); },
                         KeyCode::Left => { app.panel = prev_panel(app.panel); },
+                        KeyCode::Char('b') => { app.bus_tab = next_bus(app.bus_tab); },
                         KeyCode::Char('1') => { app.panel = Panel::Dashboard; },
                         KeyCode::Char('2') => { app.panel = Panel::Raw; },
                         KeyCode::Char('3') => { app.panel = Panel::Signals; },
@@ -427,6 +490,14 @@ fn prev_panel(p: Panel) -> Panel {
         Panel::Signals => Panel::Raw,
         Panel::Stats => Panel::Signals,
         Panel::Logs => Panel::Stats,
+    }
+}
+
+fn next_bus(b: BusTab) -> BusTab {
+    match b {
+        BusTab::All => BusTab::KCAN,
+        BusTab::KCAN => BusTab::PTCAN,
+        BusTab::PTCAN => BusTab::All,
     }
 }
 

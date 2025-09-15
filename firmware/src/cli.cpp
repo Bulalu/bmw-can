@@ -28,7 +28,11 @@ void Cli::handleLine(const String& line) {
     Serial.println("Commands:");
     Serial.println("  get");
     Serial.println("  set <key> <value>   # keys: can_bps, host, port, wifi_ssid, wifi_pass");
+    #ifdef DISABLE_NVS
+    Serial.println("  save                # (disabled in this build)");
+    #else
     Serial.println("  save                # persist to NVS");
+    #endif
     Serial.println("  net reconnect       # reapply Wi‑Fi/UDP without reboot");
     Serial.println("  can status          # print TWAI status once");
     Serial.println("  reboot");
@@ -38,8 +42,12 @@ void Cli::handleLine(const String& line) {
     return;
   }
   if (line == "save") {
+    #ifdef DISABLE_NVS
+    Serial.println("NVS disabled in this build. Skipping save.");
+    #else
     if (cfgstore::save(cfg_)) Serial.println("Saved to NVS.");
     else Serial.println("Save failed.");
+    #endif
     return;
   }
   if (line == "reboot") {

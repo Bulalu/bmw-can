@@ -14,6 +14,7 @@ use ratatui::{
     Terminal,
 };
 use std::io::{stdout, Stdout};
+use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration, Instant};
 
@@ -51,10 +52,13 @@ enum Panel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BusTab { All, KCAN, PTCAN }
 
+#[derive(Clone)]
+struct RxAnnot { frame: Frame, delta_us: u64, changed_mask: u8, bus: BusTab }
+
 struct AppState {
-    frames_all: Vec<Frame>,
-    frames_kcan: Vec<Frame>,
-    frames_ptcan: Vec<Frame>,
+    frames_all: Vec<RxAnnot>,
+    frames_kcan: Vec<RxAnnot>,
+    frames_ptcan: Vec<RxAnnot>,
     recv_count: u64,
     last_tick: Instant,
     pps: f32,
@@ -78,6 +82,11 @@ struct AppState {
     speed_hist: Vec<f64>,
     thr_hist: Vec<f64>,
     bus_tab: BusTab,
+    last_k: HashMap<u32, (u64, [u8;8])>,
+    last_p: HashMap<u32, (u64, [u8;8])>,
+    // preferences
+    pref_diff: bool,
+    pref_altrows: bool,
 }
 
 impl AppState {
@@ -108,6 +117,10 @@ impl AppState {
             speed_hist: Vec::with_capacity(256),
             thr_hist: Vec::with_capacity(256),
             bus_tab: BusTab::All,
+            last_k: HashMap::new(),
+            last_p: HashMap::new(),
+            pref_diff: true,
+            pref_altrows: true,
         }
     }
 }
@@ -217,10 +230,12 @@ async fn run_app(
             while let Ok((bus, frame)) = rx.try_recv() {
                 app.recv_count += 1;
                 app.total += 1;
-                app.frames_all.push(frame.clone());
+                let (delta_us, changed_mask) = compute_annot(&mut app, bus, &frame);
+                let annot = RxAnnot { frame: frame.clone(), delta_us, changed_mask, bus };
+                app.frames_all.push(annot.clone());
                 match bus {
-                    BusTab::KCAN => { app.recv_k += 1; app.frames_kcan.push(frame); if app.frames_kcan.len() > tail_max { let ex = app.frames_kcan.len()-tail_max; app.frames_kcan.drain(0..ex); } },
-                    BusTab::PTCAN => { app.recv_p += 1; app.frames_ptcan.push(frame); if app.frames_ptcan.len() > tail_max { let ex = app.frames_ptcan.len()-tail_max; app.frames_ptcan.drain(0..ex); } },
+                    BusTab::KCAN => { app.recv_k += 1; app.frames_kcan.push(annot); if app.frames_kcan.len() > tail_max { let ex = app.frames_kcan.len()-tail_max; app.frames_kcan.drain(0..ex); } },
+                    BusTab::PTCAN => { app.recv_p += 1; app.frames_ptcan.push(annot); if app.frames_ptcan.len() > tail_max { let ex = app.frames_ptcan.len()-tail_max; app.frames_ptcan.drain(0..ex); } },
                     BusTab::All => { /* demo */ },
                 }
                 if app.frames_all.len() > tail_max { let ex = app.frames_all.len()-tail_max; app.frames_all.drain(0..ex); }
@@ -308,15 +323,16 @@ async fn run_app(
                     let inner = Layout::default().direction(Direction::Vertical).constraints([Constraint::Length(3), Constraint::Min(1)]).split(body_chunks[1]);
                     f.render_widget(btabs, inner[0]);
 
-                    let iter_src: Box<dyn Iterator<Item=&Frame>> = match app.bus_tab {
+                    let iter_src: Box<dyn Iterator<Item=&RxAnnot>> = match app.bus_tab {
                         BusTab::All => Box::new(app.frames_all.iter().rev()),
                         BusTab::KCAN => Box::new(app.frames_kcan.iter().rev()),
                         BusTab::PTCAN => Box::new(app.frames_ptcan.iter().rev()),
                     };
+                    let mut row_i = 0usize;
                     let items: Vec<ListItem> = iter_src
-                        .filter(|fr| match_filter(fr, &app.filter))
+                        .filter(|ann| match_filter(&ann.frame, &app.filter))
                         .take(500)
-                        .map(|fr| ListItem::new(fr.to_csv_line()))
+                        .map(|ann| { let item = ListItem::new(format_row(ann, &app)); let styled = if app.pref_altrows && {row_i+=1; row_i%2==0} { item.style(Style::default().fg(Color::Gray)) } else { item }; styled })
                         .collect();
                     let list = List::new(items)
                         .block(Block::default().borders(Borders::ALL).title("Raw Frames (latest first)"));
@@ -563,4 +579,66 @@ fn style_for_signal(name: &str, v: f64) -> Style {
 
 fn styled_val(s: String, style: Style) -> Cell<'static> {
     Cell::from(Line::from(Span::styled(s, style)))
+}
+
+fn bus_color(bus: BusTab) -> Color {
+    match bus { BusTab::KCAN => Color::Cyan, BusTab::PTCAN => Color::Magenta, BusTab::All => Color::White }
+}
+
+fn id_color(id: u32) -> Color {
+    // Deterministic palette mapping
+    match (id % 7) as u8 {
+        0 => Color::LightBlue,
+        1 => Color::LightGreen,
+        2 => Color::LightCyan,
+        3 => Color::Yellow,
+        4 => Color::LightMagenta,
+        5 => Color::LightRed,
+        _ => Color::White,
+    }
+}
+
+fn delta_style(us: u64) -> Style {
+    if us == 0 { return Style::default().fg(Color::Gray); }
+    let ms = us as f64 / 1000.0;
+    if ms < 20.0 { Style::default().fg(Color::Green) }
+    else if ms < 100.0 { Style::default().fg(Color::Yellow) }
+    else { Style::default().fg(Color::Gray) }
+}
+
+fn format_row(ann: &RxAnnot, app: &AppState) -> Line<'static> {
+    // time delta (ms)
+    let delta_ms = (ann.delta_us as f64) / 1000.0;
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    spans.push(Span::styled(format!("{:+06.0}ms ", delta_ms), delta_style(ann.delta_us)));
+    // bus tag
+    spans.push(Span::styled(match ann.bus { BusTab::KCAN=>"K ", BusTab::PTCAN=>"P ", BusTab::All=>"A "}.to_string(), Style::default().fg(bus_color(ann.bus)).add_modifier(Modifier::BOLD)));
+    // id, dlc
+    spans.push(Span::styled(format!("0x{:03X} ", ann.frame.id), Style::default().fg(id_color(ann.frame.id))));
+    spans.push(Span::styled(format!("dlc={} ", ann.frame.dlc), if ann.frame.dlc==8 { Style::default() } else { Style::default().fg(Color::Yellow)}));
+
+    // data bytes with change highlighting
+    for i in 0..(ann.frame.dlc as usize).min(8) {
+        let b = ann.frame.data[i];
+        let changed = ((ann.changed_mask >> i) & 1) != 0 && app.pref_diff;
+        let st = if changed { Style::default().fg(bus_color(ann.bus)).add_modifier(Modifier::BOLD) } else { Style::default() };
+        spans.push(Span::styled(format!("{:02X}", b), st));
+        if i+1 < (ann.frame.dlc as usize).min(8) { spans.push(Span::raw(" ")); }
+    }
+
+    Line::from(spans)
+}
+
+fn compute_annot(app: &mut AppState, bus: BusTab, fr: &Frame) -> (u64, u8) {
+    let map = match bus { BusTab::KCAN => &mut app.last_k, BusTab::PTCAN => &mut app.last_p, BusTab::All => &mut app.last_k };
+    let (delta, changed) = if let Some((last_ts, last_data)) = map.get(&fr.id).cloned() {
+        let d = fr.ts_us.saturating_sub(last_ts);
+        let mut mask: u8 = 0;
+        for i in 0..(fr.dlc as usize).min(8) {
+            if fr.data[i] != last_data[i] { mask |= 1 << i; }
+        }
+        (d, mask)
+    } else { (0, 0) };
+    map.insert(fr.id, (fr.ts_us, fr.data));
+    (delta, changed)
 }

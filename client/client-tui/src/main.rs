@@ -13,7 +13,9 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Tabs, Chart, Axis, Dataset, GraphType, Table, Row, Cell},
     Terminal,
 };
-use std::io::{stdout, Stdout};
+use std::io::{stdout, Stdout, Write};
+use std::fs::{File, create_dir_all};
+use std::path::PathBuf;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration, Instant};
@@ -38,6 +40,15 @@ struct Args {
     /// Demo mode: generate fake frames instead of UDP
     #[arg(long, default_value_t = false)]
     demo: bool,
+    /// Optional logging directory; enables logging when combined with --log
+    #[arg(long)]
+    log_dir: Option<String>,
+    /// Log format: csv|jsonl (default csv)
+    #[arg(long, default_value = "csv")]
+    log_format: String,
+    /// Start with logging enabled
+    #[arg(long, default_value_t = false)]
+    log: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +98,7 @@ struct AppState {
     // preferences
     pref_diff: bool,
     pref_altrows: bool,
+    logger: Logger,
 }
 
 impl AppState {
@@ -121,7 +133,59 @@ impl AppState {
             last_p: HashMap::new(),
             pref_diff: true,
             pref_altrows: true,
+            logger: Logger::new(),
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum LogFormat { Csv, Jsonl }
+
+struct Logger {
+    enabled: bool,
+    format: LogFormat,
+    dir: PathBuf,
+    k: Option<File>,
+    p: Option<File>,
+    k_path: Option<PathBuf>,
+    p_path: Option<PathBuf>,
+}
+
+impl Logger {
+    fn new() -> Self { Self { enabled: false, format: LogFormat::Csv, dir: PathBuf::from("logs"), k: None, p: None, k_path: None, p_path: None } }
+    fn configure(&mut self, dir: Option<String>, fmt: &str) {
+        if let Some(d) = dir { self.dir = PathBuf::from(d); }
+        self.format = if fmt.eq_ignore_ascii_case("jsonl") { LogFormat::Jsonl } else { LogFormat::Csv };
+    }
+    fn enable(&mut self) -> anyhow::Result<()> {
+        create_dir_all(&self.dir)?;
+        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let k_path = self.dir.join(format!("kcan_{}.{}", ts, self.ext()));
+        let p_path = self.dir.join(format!("ptcan_{}.{}", ts, self.ext()));
+        self.k = Some(File::create(&k_path)?);
+        self.p = Some(File::create(&p_path)?);
+        self.k_path = Some(k_path);
+        self.p_path = Some(p_path);
+        self.enabled = true;
+        Ok(())
+    }
+    fn disable(&mut self) {
+        self.enabled = false;
+        self.k = None; self.p = None; self.k_path = None; self.p_path = None;
+    }
+    fn ext(&self) -> &'static str { match self.format { LogFormat::Csv => "csv", LogFormat::Jsonl => "jsonl" } }
+    fn write(&mut self, bus: BusTab, fr: &Frame) {
+        if !self.enabled { return; }
+        let line = match self.format {
+            LogFormat::Csv => format!("{},0x{:X},{},{}\n", fr.ts_us, fr.id, fr.dlc, bytes_hex(&fr.data, fr.dlc as usize)),
+            LogFormat::Jsonl => format!("{{\"ts_us\":{},\"id\":{},\"dlc\":{},\"data\":\"{}\",\"bus\":\"{}\"}}\n",
+                fr.ts_us, fr.id, fr.dlc, bytes_hex(&fr.data, fr.dlc as usize), match bus { BusTab::KCAN=>"KCAN", BusTab::PTCAN=>"PTCAN", BusTab::All=>"ALL" }),
+        };
+        let _ = match bus {
+            BusTab::KCAN => { if let Some(f) = self.k.as_mut() { f.write_all(line.as_bytes()).ok(); f.flush().ok(); } },
+            BusTab::PTCAN => { if let Some(f) = self.p.as_mut() { f.write_all(line.as_bytes()).ok(); f.flush().ok(); } },
+            BusTab::All => {},
+        };
     }
 }
 
@@ -200,7 +264,7 @@ async fn main() -> Result<()> {
     } else {
         format!("{} [K:{} | P:{}]", args.host, args.kcan_port, args.ptcan_port)
     };
-    let res = run_app(&mut term, &mut rx, args.tail, status_socket, args.demo).await;
+    let res = run_app(&mut term, &mut rx, args.tail, status_socket, args.demo, args.log_dir, args.log_format, args.log).await;
     disable_raw_mode()?;
     execute!(stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
     term.show_cursor()?;
@@ -220,9 +284,14 @@ async fn run_app(
     tail_max: usize,
     status_socket: String,
     demo_mode: bool,
+    log_dir: Option<String>,
+    log_format: String,
+    start_log: bool,
 ) -> Result<()> {
     let mut app = AppState::new(status_socket);
     app.demo = demo_mode;
+    app.logger.configure(log_dir, &log_format);
+    if start_log { let _ = app.logger.enable(); }
     let mut ticker = time::interval(Duration::from_millis(100));
     loop {
         // Non-blocking drain of frames
@@ -238,6 +307,7 @@ async fn run_app(
                     BusTab::PTCAN => { app.recv_p += 1; app.frames_ptcan.push(annot); if app.frames_ptcan.len() > tail_max { let ex = app.frames_ptcan.len()-tail_max; app.frames_ptcan.drain(0..ex); } },
                     BusTab::All => { /* demo */ },
                 }
+                app.logger.write(bus, &frame);
                 if app.frames_all.len() > tail_max { let ex = app.frames_all.len()-tail_max; app.frames_all.drain(0..ex); }
             }
         }
@@ -448,7 +518,15 @@ async fn run_app(
                     f.render_widget(p, body_chunks[1]);
                 }
                 Panel::Logs => {
-                    let p = Paragraph::new("Logging controls coming soon")
+                    let mut info = String::new();
+                    info.push_str(&format!("Status: {}\n", if app.logger.enabled {"on"} else {"off"}));
+                    info.push_str(&format!("Format: {}\n", match app.logger.format { LogFormat::Csv=>"csv", LogFormat::Jsonl=>"jsonl" }));
+                    info.push_str(&format!("Dir: {}\n", app.logger.dir.display()));
+                    let (k_path, p_path) = (app.logger.k_path.as_ref(), app.logger.p_path.as_ref());
+                    if let Some(kp) = k_path { info.push_str(&format!("K-CAN: {} ({})\n", kp.display(), human_size(kp))); } else { info.push_str("K-CAN: (not active)\n"); }
+                    if let Some(pp) = p_path { info.push_str(&format!("PT-CAN: {} ({})\n", pp.display(), human_size(pp))); } else { info.push_str("PT-CAN: (not active)\n"); }
+                    info.push_str("\nPress 'l' to toggle logging.\n");
+                    let p = Paragraph::new(info)
                         .block(Block::default().borders(Borders::ALL).title("Logs"));
                     f.render_widget(p, body_chunks[1]);
                 }
@@ -485,7 +563,7 @@ async fn run_app(
                         KeyCode::Char('/') => { app.input_mode = true; app.input_buf.clear(); },
                         KeyCode::Char('c') => { app.frames_all.clear(); app.frames_kcan.clear(); app.frames_ptcan.clear(); },
                         KeyCode::Char('p') => { app.paused = !app.paused; },
-                        KeyCode::Char('l') => { app.logging = !app.logging; },
+                        KeyCode::Char('l') => { if app.logger.enabled { app.logger.disable(); app.logging=false; } else if app.logger.enable().is_ok() { app.logging=true; } },
                         KeyCode::Tab | KeyCode::Char('\t') | KeyCode::Right => { app.panel = next_panel(app.panel); },
                         KeyCode::Left => { app.panel = prev_panel(app.panel); },
                         KeyCode::Char('b') => { app.bus_tab = next_bus(app.bus_tab); },
@@ -641,4 +719,19 @@ fn compute_annot(app: &mut AppState, bus: BusTab, fr: &Frame) -> (u64, u8) {
     } else { (0, 0) };
     map.insert(fr.id, (fr.ts_us, fr.data));
     (delta, changed)
+}
+
+fn bytes_hex(data: &[u8;8], len: usize) -> String {
+    let mut s = String::with_capacity(len*2);
+    for i in 0..len { s.push_str(&format!("{:02X}", data[i])); }
+    s
+}
+
+fn human_size(path: &PathBuf) -> String {
+    if let Ok(meta) = std::fs::metadata(path) {
+        let b = meta.len();
+        if b < 1024 { format!("{} B", b) }
+        else if b < 1024*1024 { format!("{:.1} KB", b as f64 / 1024.0) }
+        else { format!("{:.2} MB", b as f64 / (1024.0*1024.0)) }
+    } else { String::from("size ?") }
 }

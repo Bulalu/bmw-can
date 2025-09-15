@@ -11,4 +11,4 @@ ratatui = { version = "0.26", default-features = false, features = ["crossterm"]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 client-core = { path = "../client-core" }
 client-udp = { path = "../client-udp" }
-
+humantime = "2"

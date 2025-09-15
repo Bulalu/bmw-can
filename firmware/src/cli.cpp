@@ -28,12 +28,15 @@ void Cli::handleLine(const String& line) {
     Serial.println("Commands:");
     Serial.println("  get");
     Serial.println("  set <key> <value>   # keys: can_bps, host, port, wifi_ssid, wifi_pass");
-    #ifdef DISABLE_NVS
+#ifdef DISABLE_NVS
     Serial.println("  save                # (disabled in this build)");
     #else
     Serial.println("  save                # persist to NVS");
     #endif
     Serial.println("  net reconnect       # reapply Wi‑Fi/UDP without reboot");
+    Serial.println("  net status          # show Wi‑Fi + UDP sink info");
+    Serial.println("  net auto on|off     # auto-learn sink via HELLO");
+    Serial.println("  net sink <ip> <port># set sink manually");
     Serial.println("  can status          # print TWAI status once");
     Serial.println("  reboot");
     Serial.println("  selftest on|off     # generate synthetic frames");
@@ -59,6 +62,27 @@ void Cli::handleLine(const String& line) {
   if (line == "net reconnect") {
     udp_.begin(cfg_);
     Serial.println("Network reconfigured.");
+    return;
+  }
+
+  if (line == "net status") {
+    Serial.printf("WiFi: %s  IP: %s\n", WiFi.status() == WL_CONNECTED ? "connected" : "not connected", WiFi.localIP().toString().c_str());
+    Serial.printf("UDP sink: %s:%u  auto=%s\n", udp_.remote().toString().c_str(), udp_.remotePort(), udp_.autoSink() ? "on" : "off");
+    return;
+  }
+
+  if (line == "net auto on") { udp_.setAutoSink(true); Serial.println("auto-sink ON"); return; }
+  if (line == "net auto off") { udp_.setAutoSink(false); Serial.println("auto-sink OFF"); return; }
+
+  if (line.startsWith("net sink ")) {
+    // net sink <ip> <port>
+    int sp1 = line.indexOf(' '); int sp2 = line.indexOf(' ', sp1 + 1); int sp3 = line.indexOf(' ', sp2 + 1);
+    if (sp2 < 0 || sp3 < 0) { Serial.println("Usage: net sink <ip> <port>"); return; }
+    String ip = line.substring(sp2 + 1, sp3);
+    String port = line.substring(sp3 + 1);
+    cfg_.udp_host = ip; cfg_.udp_port = (uint16_t)port.toInt();
+    udp_.begin(cfg_);
+    Serial.printf("sink set to %s:%u\n", cfg_.udp_host.c_str(), cfg_.udp_port);
     return;
   }
 

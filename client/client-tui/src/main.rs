@@ -162,6 +162,22 @@ async fn main() -> Result<()> {
         });
     }
 
+    // HELLO broadcaster: claim sinks periodically (best-effort)
+    if !args.demo {
+        let k_port = args.kcan_port;
+        let p_port = args.ptcan_port;
+        tokio::spawn(async move {
+            if let Ok(sock) = tokio::net::UdpSocket::bind("0.0.0.0:0").await {
+                let _ = sock.set_broadcast(true);
+                loop {
+                    let _ = sock.send_to(format!("HELLO {}", k_port).as_bytes(), ("255.255.255.255", k_port)).await;
+                    let _ = sock.send_to(format!("HELLO {}", p_port).as_bytes(), ("255.255.255.255", p_port)).await;
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            }
+        });
+    }
+
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen, EnableMouseCapture)?;
     let mut term = init_terminal()?;

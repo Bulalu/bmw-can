@@ -35,6 +35,7 @@ void setup() {
 
 void loop() {
   if (g_cli) g_cli->tick();
+  g_udp.tick();
   g_can.tick([&](const Frame& f) {
     g_udp.sendFrame(f);
     if (g_raw_serial) {

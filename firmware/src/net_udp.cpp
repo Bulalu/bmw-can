@@ -30,8 +30,9 @@ void NetUdp::begin(const Config& cfg) {
   } else {
     Serial.println("[WiFi] No SSID configured. Set via CLI: set wifi_ssid <ssid>; set wifi_pass <pass>; save; net reconnect");
   }
-  udp_.begin(0); // random local port
-  Serial.printf("[UDP] Remote %s:%u\n", cfg.udp_host.c_str(), cfg.udp_port);
+  // Listen on the same port to accept HELLO auto-sink messages
+  udp_.begin(port_);
+  Serial.printf("[UDP] Remote %s:%u (listening on %u)\n", cfg.udp_host.c_str(), cfg.udp_port, port_);
 }
 
 void NetUdp::sendFrame(const Frame& f) {
@@ -49,4 +50,28 @@ void NetUdp::sendFrame(const Frame& f) {
   udp_.beginPacket(remote_, port_);
   udp_.write((const uint8_t*)line, n);
   udp_.endPacket();
+}
+
+void NetUdp::tick() {
+  // Auto-learn sink: expect a small ASCII packet like "HELLO 45454"
+  int sz = udp_.parsePacket();
+  if (sz > 0 && auto_sink_) {
+    char buf[64];
+    int n = udp_.read(buf, sizeof(buf) - 1);
+    if (n < 0) return;
+    buf[n] = '\0';
+    if (strncmp(buf, "HELLO", 5) == 0) {
+      uint16_t new_port = port_;
+      // Parse optional port after HELLO
+      char* p = buf + 5;
+      while (*p == ' ') ++p;
+      if (*p) {
+        new_port = (uint16_t)atoi(p);
+      }
+      remote_ = udp_.remoteIP();
+      port_ = new_port;
+      last_hello_ms_ = millis();
+      Serial.printf("[UDP] Sink set to %s:%u via HELLO\n", remote_.toString().c_str(), port_);
+    }
+  }
 }

@@ -5,6 +5,9 @@
 #include "cli.hpp"
 #include "config_store.hpp"
 #include "selftest.hpp"
+#ifdef BUILD_OBD
+#include "obd_poller.hpp"
+#endif
 
 static Config g_cfg;
 static CanBus g_can;
@@ -12,6 +15,9 @@ static NetUdp g_udp;
 static Cli* g_cli;
 static SelfTest g_self;
 static bool g_raw_serial = false;
+#ifdef BUILD_OBD
+static ObdPoller g_obd;
+#endif
 
 void setup() {
   Serial.begin(115200);
@@ -29,6 +35,18 @@ void setup() {
   g_udp.begin(g_cfg);
   g_can.begin(g_cfg);
   g_cli = new Cli(g_cfg, g_can, g_udp, g_self, g_raw_serial);
+#ifdef BUILD_OBD
+  g_obd.begin(200);
+  // Wire CLI actions
+  g_cli->setObdDiscover([&](){ g_obd.startDiscover(
+    [&](const Frame& tx){ return g_can.send(tx); },
+    [&](const Frame& tx){ g_udp.sendFrame(tx); }
+  ); });
+  g_cli->setDtcRead([&](uint8_t mode){ g_obd.requestDtc(mode,
+    [&](const Frame& tx){ return g_can.send(tx); },
+    [&](const Frame& tx){ g_udp.sendFrame(tx); }
+  ); });
+#endif
 
   Serial.println("Setup complete. Type 'help' over serial.");
 }
@@ -38,6 +56,9 @@ void loop() {
   g_udp.tick();
   g_can.tick([&](const Frame& f) {
     g_udp.sendFrame(f);
+    #ifdef BUILD_OBD
+    g_obd.onRx(f);
+    #endif
     if (g_raw_serial) {
       // Print CSV to serial for wiring/bitrate debug
       Serial.printf("%llu,0x%X,%u,", static_cast<unsigned long long>(f.ts_us), f.id, f.dlc);
@@ -62,4 +83,17 @@ void loop() {
     }
   });
   delay(10);
+#ifdef BUILD_OBD
+  // Periodic OBD requests (Mode 01 singles)
+  g_obd.tick(
+    [&](const Frame& tx){ return g_can.send(tx); },
+    [&](const Frame& tx){ g_udp.sendFrame(tx); if (g_raw_serial) {
+        Serial.printf("%llu,0x%X,%u,", static_cast<unsigned long long>(tx.ts_us), tx.id, tx.dlc);
+        static const char* hex = "0123456789ABCDEF";
+        for (uint8_t i = 0; i < tx.dlc && i < 8; ++i) { Serial.write(hex[(tx.data[i] >> 4) & 0xF]); Serial.write(hex[tx.data[i] & 0xF]); }
+        Serial.write('\n');
+      }
+    }
+  );
+#endif
 }

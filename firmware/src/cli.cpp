@@ -42,6 +42,10 @@ void Cli::handleLine(const String& line) {
     Serial.println("  selftest on|off     # generate synthetic frames");
     Serial.println("  selftest once <n>   # emit N frames immediately");
     Serial.println("  raw on|off          # print raw frames over serial");
+    #ifdef BUILD_OBD
+    Serial.println("  obd discover        # scan supported Mode 01 PIDs and filter polling set");
+    Serial.println("  dtc read stored|pending|permanent   # request DTCs (read-only)");
+    #endif
     return;
   }
   if (line == "save") {
@@ -108,6 +112,27 @@ void Cli::handleLine(const String& line) {
     Serial.println("raw serial OFF");
     return;
   }
+
+  #ifdef BUILD_OBD
+  if (line == "obd discover") {
+    if (obd_discover_cb_) { obd_discover_cb_(); Serial.println("OBD discover started"); }
+    else { Serial.println("OBD discover not available"); }
+    return;
+  }
+  if (line.startsWith("dtc read ")) {
+    int sp2 = line.indexOf(' ', line.indexOf(' ') + 1);
+    String which = line.substring(sp2 + 1);
+    which.toLowerCase();
+    uint8_t mode = 0;
+    if (which == "stored") mode = 0x03;
+    else if (which == "pending") mode = 0x07;
+    else if (which == "permanent") mode = 0x0A;
+    if (mode == 0) { Serial.println("Usage: dtc read stored|pending|permanent"); return; }
+    if (dtc_read_cb_) { dtc_read_cb_(mode); Serial.printf("DTC read requested (mode 0x%02X)\n", mode); }
+    else { Serial.println("DTC read not available"); }
+    return;
+  }
+  #endif
 
   if (line.startsWith("selftest ")) {
     if (line.endsWith(" on") || line.endsWith(" on\r") || line.endsWith(" on\n")) {

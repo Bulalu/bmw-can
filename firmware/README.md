@@ -8,8 +8,9 @@ This directory contains a PlatformIO project for the ESP32 CAN sniffer/forwarder
 
 ## Build & Upload
 - Select environment:
-  - PT-CAN (500 kbps): `pio run -e esp32dev-ptcan`
-  - K-CAN (100 kbps): `pio run -e esp32dev-kcan`
+  - PT-CAN (500 kbps, sniffer): `pio run -e esp32dev-ptcan`
+  - K-CAN (100 kbps, sniffer): `pio run -e esp32dev-kcan`
+  - OBD (500 kbps, active TX): `pio run -e esp32dev-obd`
 - Upload (example PT-CAN): `pio run -t upload -e esp32dev-ptcan`
 - Serial monitor: `pio device monitor -b 115200`
   
@@ -23,7 +24,7 @@ Defaults via build flags in `platformio.ini`:
 - `CAN_TX` (default 13)
 - `CAN_RX` (default 5)
 - `UDP_HOST` (baked per env)
-- `UDP_PORT` (default 45454)
+- `UDP_PORT` (default 45454; PT=45455; OBD=45456)
 
 Optional Wi‑Fi credentials for auto-connect (add to env build_flags):
 - `WIFI_SSID` and `WIFI_PASS`
@@ -63,4 +64,5 @@ Runtime CLI over Serial (early stub):
 - To avoid runtime configuration, define `UDP_HOST`, `UDP_PORT`, `CAN_BPS`, `WIFI_SSID`, `WIFI_PASS`, and add `-DDISABLE_NVS` to the env. After flashing, the device uses baked settings and ignores NVS.
 
 ## Notes
-- The CAN controller runs in listen-only mode (no ACK, no transmit). Safe for tapping an active vehicle bus.
+- Sniffer envs run TWAI in listen-only mode (no TX). Safe for tapping active buses.
+- OBD env runs in active (normal) mode and transmits Mode 01 requests to 0x7DF at a conservative rate; both TX and RX frames are forwarded via UDP.

@@ -15,6 +15,8 @@ class CanBus {
   void begin(const Config& cfg);
   // Poll for frames; call onFrame for each received frame.
   void tick(const std::function<void(const Frame&)>& onFrame);
+  // Transmit a frame (non-blocking best-effort). Only available in active TX builds.
+  bool send(const Frame& f);
 
  private:
   bool started_{false};

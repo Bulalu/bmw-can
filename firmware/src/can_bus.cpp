@@ -18,7 +18,12 @@ void CanBus::begin(const Config& cfg) {
 
   twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT((gpio_num_t)cfg.can_tx,
                                                               (gpio_num_t)cfg.can_rx,
-                                                              TWAI_MODE_LISTEN_ONLY);
+#ifdef BUILD_OBD
+                                                              TWAI_MODE_NORMAL
+#else
+                                                              TWAI_MODE_LISTEN_ONLY
+#endif
+                                                              );
   // Increase RX queue length a bit for bursty traffic
   g_config.rx_queue_len = 32;
   g_config.tx_queue_len = 8;
@@ -66,4 +71,21 @@ void CanBus::tick(const std::function<void(const Frame&)>& onFrame) {
     }
     last_status_ms = now;
   }
+}
+
+bool CanBus::send(const Frame& f) {
+#ifdef BUILD_OBD
+  if (!started_) return false;
+  twai_message_t msg{};
+  msg.identifier = f.id & 0x7FF;
+  msg.extd = 0; // standard frame
+  msg.rtr = 0;
+  msg.data_length_code = f.dlc <= 8 ? f.dlc : 8;
+  for (uint8_t i = 0; i < msg.data_length_code; ++i) msg.data[i] = f.data[i];
+  // Non-blocking transmit
+  return twai_transmit(&msg, 0) == ESP_OK;
+#else
+  (void)f;
+  return false;
+#endif
 }

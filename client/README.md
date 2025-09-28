@@ -10,8 +10,10 @@ Live client to receive UDP frames from the ESP32 firmware, show a TUI, and later
 ## Build & Run
 - From repo root or `client/` directory:
   - Demo (fake data): `cargo run -p client-tui -- --demo`
-  - Dual-bus UDP (K‑CAN/PT‑CAN on separate ports):
+- Dual-bus UDP (K‑CAN/PT‑CAN on separate ports):
     - `cargo run -p client-tui -- --host 0.0.0.0 --kcan-port 45454 --ptcan-port 45455 --dbc ../dbc/bmw_e90.dbc`
+  - Add OBD (optional third port):
+    - `cargo run -p client-tui -- --host 0.0.0.0 --kcan-port 45454 --ptcan-port 45455 --obd-port 45456`
 - Quit TUI: press `q`
 
 ## Next Steps
@@ -23,4 +25,5 @@ Live client to receive UDP frames from the ESP32 firmware, show a TUI, and later
 - Run two firmware devices, each sending to your Mac:
   - K‑CAN: `set can_bps 100000; set host <mac-ip>; set port 45454`
   - PT‑CAN: `set can_bps 500000; set host <mac-ip>; set port 45455`
+  - OBD:    `set can_bps 500000; set host <mac-ip>; set port 45456` (OBD firmware build only)
 - In the TUI Raw panel, press `b` to cycle bus tab (All/K‑CAN/PT‑CAN), or use the on‑screen tabs.

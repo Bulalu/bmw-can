@@ -31,6 +31,9 @@ struct Args {
     /// PTCAN UDP port
     #[arg(long, default_value_t = 45455)]
     ptcan_port: u16,
+    /// OBD UDP port (set to 0 to disable)
+    #[arg(long, default_value_t = 45456)]
+    obd_port: u16,
     /// Path to DBC file (unused in MVP, reserved for next step)
     #[arg(long, default_value = "../dbc/bmw_e90.dbc")]
     dbc: String,
@@ -61,7 +64,7 @@ enum Panel {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BusTab { All, KCAN, PTCAN }
+enum BusTab { All, KCAN, PTCAN, OBD }
 
 #[derive(Clone)]
 struct RxAnnot { frame: Frame, delta_us: u64, changed_mask: u8, bus: BusTab }
@@ -70,14 +73,17 @@ struct AppState {
     frames_all: Vec<RxAnnot>,
     frames_kcan: Vec<RxAnnot>,
     frames_ptcan: Vec<RxAnnot>,
+    frames_obd: Vec<RxAnnot>,
     recv_count: u64,
     last_tick: Instant,
     pps: f32,
     total: u64,
     pps_k: f32,
     pps_p: f32,
+    pps_o: f32,
     recv_k: u64,
     recv_p: u64,
+    recv_o: u64,
     paused: bool,
     logging: bool,
     show_help: bool,
@@ -95,6 +101,7 @@ struct AppState {
     bus_tab: BusTab,
     last_k: HashMap<u32, (u64, [u8;8])>,
     last_p: HashMap<u32, (u64, [u8;8])>,
+    last_o: HashMap<u32, (u64, [u8;8])>,
     // preferences
     pref_diff: bool,
     pref_altrows: bool,
@@ -107,14 +114,17 @@ impl AppState {
             frames_all: Vec::with_capacity(1024),
             frames_kcan: Vec::with_capacity(1024),
             frames_ptcan: Vec::with_capacity(1024),
+            frames_obd: Vec::with_capacity(1024),
             recv_count: 0,
             last_tick: Instant::now(),
             pps: 0.0,
             total: 0,
             pps_k: 0.0,
             pps_p: 0.0,
+            pps_o: 0.0,
             recv_k: 0,
             recv_p: 0,
+            recv_o: 0,
             paused: false,
             logging: false,
             show_help: false,
@@ -131,6 +141,7 @@ impl AppState {
             bus_tab: BusTab::All,
             last_k: HashMap::new(),
             last_p: HashMap::new(),
+            last_o: HashMap::new(),
             pref_diff: true,
             pref_altrows: true,
             logger: Logger::new(),
@@ -147,12 +158,14 @@ struct Logger {
     dir: PathBuf,
     k: Option<File>,
     p: Option<File>,
+    o: Option<File>,
     k_path: Option<PathBuf>,
     p_path: Option<PathBuf>,
+    o_path: Option<PathBuf>,
 }
 
 impl Logger {
-    fn new() -> Self { Self { enabled: false, format: LogFormat::Csv, dir: PathBuf::from("logs"), k: None, p: None, k_path: None, p_path: None } }
+    fn new() -> Self { Self { enabled: false, format: LogFormat::Csv, dir: PathBuf::from("logs"), k: None, p: None, o: None, k_path: None, p_path: None, o_path: None } }
     fn configure(&mut self, dir: Option<String>, fmt: &str) {
         if let Some(d) = dir { self.dir = PathBuf::from(d); }
         self.format = if fmt.eq_ignore_ascii_case("jsonl") { LogFormat::Jsonl } else { LogFormat::Csv };
@@ -162,16 +175,19 @@ impl Logger {
         let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         let k_path = self.dir.join(format!("kcan_{}.{}", ts, self.ext()));
         let p_path = self.dir.join(format!("ptcan_{}.{}", ts, self.ext()));
+        let o_path = self.dir.join(format!("obd_{}.{}", ts, self.ext()));
         self.k = Some(File::create(&k_path)?);
         self.p = Some(File::create(&p_path)?);
+        self.o = Some(File::create(&o_path)?);
         self.k_path = Some(k_path);
         self.p_path = Some(p_path);
+        self.o_path = Some(o_path);
         self.enabled = true;
         Ok(())
     }
     fn disable(&mut self) {
         self.enabled = false;
-        self.k = None; self.p = None; self.k_path = None; self.p_path = None;
+        self.k = None; self.p = None; self.o = None; self.k_path = None; self.p_path = None; self.o_path = None;
     }
     fn ext(&self) -> &'static str { match self.format { LogFormat::Csv => "csv", LogFormat::Jsonl => "jsonl" } }
     fn write(&mut self, bus: BusTab, fr: &Frame) {
@@ -179,11 +195,12 @@ impl Logger {
         let line = match self.format {
             LogFormat::Csv => format!("{},0x{:X},{},{}\n", fr.ts_us, fr.id, fr.dlc, bytes_hex(&fr.data, fr.dlc as usize)),
             LogFormat::Jsonl => format!("{{\"ts_us\":{},\"id\":{},\"dlc\":{},\"data\":\"{}\",\"bus\":\"{}\"}}\n",
-                fr.ts_us, fr.id, fr.dlc, bytes_hex(&fr.data, fr.dlc as usize), match bus { BusTab::KCAN=>"KCAN", BusTab::PTCAN=>"PTCAN", BusTab::All=>"ALL" }),
+                fr.ts_us, fr.id, fr.dlc, bytes_hex(&fr.data, fr.dlc as usize), match bus { BusTab::KCAN=>"KCAN", BusTab::PTCAN=>"PTCAN", BusTab::OBD=>"OBD", BusTab::All=>"ALL" }),
         };
         let _ = match bus {
             BusTab::KCAN => { if let Some(f) = self.k.as_mut() { f.write_all(line.as_bytes()).ok(); f.flush().ok(); } },
             BusTab::PTCAN => { if let Some(f) = self.p.as_mut() { f.write_all(line.as_bytes()).ok(); f.flush().ok(); } },
+            BusTab::OBD => { if let Some(f) = self.o.as_mut() { f.write_all(line.as_bytes()).ok(); f.flush().ok(); } },
             BusTab::All => {},
         };
     }
@@ -237,18 +254,35 @@ async fn main() -> Result<()> {
                 let _ = tx_p.send((BusTab::PTCAN, f)).await;
             }
         });
+
+        // OBD listener (optional; port 0 disables)
+        if args.obd_port != 0 {
+            let tx_o = tx.clone();
+            let host_o = args.host.clone();
+            let o_port = args.obd_port;
+            tokio::spawn(async move {
+                let (inner_tx, mut inner_rx) = mpsc::channel::<Frame>(4096);
+                let cfg = UdpConfig { host: host_o, port: o_port };
+                tokio::spawn(async move { let _ = run_udp_listener(cfg, inner_tx).await; });
+                while let Some(f) = inner_rx.recv().await {
+                    let _ = tx_o.send((BusTab::OBD, f)).await;
+                }
+            });
+        }
     }
 
     // HELLO broadcaster: claim sinks periodically (best-effort)
     if !args.demo {
         let k_port = args.kcan_port;
         let p_port = args.ptcan_port;
+        let o_port = args.obd_port;
         tokio::spawn(async move {
             if let Ok(sock) = tokio::net::UdpSocket::bind("0.0.0.0:0").await {
                 let _ = sock.set_broadcast(true);
                 loop {
                     let _ = sock.send_to(format!("HELLO {}", k_port).as_bytes(), ("255.255.255.255", k_port)).await;
                     let _ = sock.send_to(format!("HELLO {}", p_port).as_bytes(), ("255.255.255.255", p_port)).await;
+                    if o_port != 0 { let _ = sock.send_to(format!("HELLO {}", o_port).as_bytes(), ("255.255.255.255", o_port)).await; }
                     tokio::time::sleep(Duration::from_secs(5)).await;
                 }
             }
@@ -262,7 +296,7 @@ async fn main() -> Result<()> {
     let status_socket = if args.demo {
         String::from("demo")
     } else {
-        format!("{} [K:{} | P:{}]", args.host, args.kcan_port, args.ptcan_port)
+        if args.obd_port != 0 { format!("{} [K:{} | P:{} | O:{}]", args.host, args.kcan_port, args.ptcan_port, args.obd_port) } else { format!("{} [K:{} | P:{}]", args.host, args.kcan_port, args.ptcan_port) }
     };
     let res = run_app(&mut term, &mut rx, args.tail, status_socket, args.demo, args.log_dir, args.log_format, args.log).await;
     disable_raw_mode()?;
@@ -305,6 +339,7 @@ async fn run_app(
                 match bus {
                     BusTab::KCAN => { app.recv_k += 1; app.frames_kcan.push(annot); if app.frames_kcan.len() > tail_max { let ex = app.frames_kcan.len()-tail_max; app.frames_kcan.drain(0..ex); } },
                     BusTab::PTCAN => { app.recv_p += 1; app.frames_ptcan.push(annot); if app.frames_ptcan.len() > tail_max { let ex = app.frames_ptcan.len()-tail_max; app.frames_ptcan.drain(0..ex); } },
+                    BusTab::OBD   => { app.recv_o += 1; app.frames_obd.push(annot); if app.frames_obd.len() > tail_max { let ex = app.frames_obd.len()-tail_max; app.frames_obd.drain(0..ex); } },
                     BusTab::All => { /* demo */ },
                 }
                 app.logger.write(bus, &frame);
@@ -328,7 +363,8 @@ async fn run_app(
             app.pps = app.recv_count as f32 / secs;
             app.pps_k = app.recv_k as f32 / secs;
             app.pps_p = app.recv_p as f32 / secs;
-            app.recv_count = 0; app.recv_k = 0; app.recv_p = 0;
+            app.pps_o = app.recv_o as f32 / secs;
+            app.recv_count = 0; app.recv_k = 0; app.recv_p = 0; app.recv_o = 0;
             app.last_tick = Instant::now();
         }
 
@@ -345,9 +381,9 @@ async fn run_app(
 
             // Status bar
             let status = format!(
-                "BMW-CAN Client  |  {}  |  PPS: {:.1} (K:{:.1} P:{:.1})  |  Total: {}  |  Logging: {}  |  Filter: {}",
+                "BMW-CAN Client  |  {}  |  PPS: {:.1} (K:{:.1} P:{:.1} O:{:.1})  |  Total: {}  |  Logging: {}  |  Filter: {}",
                 if app.demo { String::from("MODE: demo") } else { format!("UDP: {}", app.status_socket) },
-                app.pps, app.pps_k, app.pps_p,
+                app.pps, app.pps_k, app.pps_p, app.pps_o,
                 app.total,
                 if app.logging {"on"} else {"off"},
                 if app.filter.is_empty() {"(none)".to_string()} else {app.filter.clone()}
@@ -384,11 +420,11 @@ async fn run_app(
             match app.panel {
                 Panel::Raw => {
                     // Bus tabs inside Raw panel
-                    let bus_titles = ["All", "K-CAN", "PT-CAN"].iter().map(|t| Line::from(Span::raw(*t))).collect::<Vec<_>>();
+                    let bus_titles = ["All", "K-CAN", "PT-CAN", "OBD"].iter().map(|t| Line::from(Span::raw(*t))).collect::<Vec<_>>();
                     let mut btabs = Tabs::new(bus_titles)
                         .block(Block::default().borders(Borders::ALL).title("Bus"))
                         .highlight_style(Style::default().add_modifier(Modifier::BOLD));
-                    let bi = match app.bus_tab { BusTab::All => 0, BusTab::KCAN => 1, BusTab::PTCAN => 2 };
+                    let bi = match app.bus_tab { BusTab::All => 0, BusTab::KCAN => 1, BusTab::PTCAN => 2, BusTab::OBD => 3 };
                     btabs = btabs.select(bi);
                     let inner = Layout::default().direction(Direction::Vertical).constraints([Constraint::Length(3), Constraint::Min(1)]).split(body_chunks[1]);
                     f.render_widget(btabs, inner[0]);
@@ -397,6 +433,7 @@ async fn run_app(
                         BusTab::All => Box::new(app.frames_all.iter().rev()),
                         BusTab::KCAN => Box::new(app.frames_kcan.iter().rev()),
                         BusTab::PTCAN => Box::new(app.frames_ptcan.iter().rev()),
+                        BusTab::OBD => Box::new(app.frames_obd.iter().rev()),
                     };
                     let mut row_i = 0usize;
                     let items: Vec<ListItem> = iter_src
@@ -522,9 +559,10 @@ async fn run_app(
                     info.push_str(&format!("Status: {}\n", if app.logger.enabled {"on"} else {"off"}));
                     info.push_str(&format!("Format: {}\n", match app.logger.format { LogFormat::Csv=>"csv", LogFormat::Jsonl=>"jsonl" }));
                     info.push_str(&format!("Dir: {}\n", app.logger.dir.display()));
-                    let (k_path, p_path) = (app.logger.k_path.as_ref(), app.logger.p_path.as_ref());
+                    let (k_path, p_path, o_path) = (app.logger.k_path.as_ref(), app.logger.p_path.as_ref(), app.logger.o_path.as_ref());
                     if let Some(kp) = k_path { info.push_str(&format!("K-CAN: {} ({})\n", kp.display(), human_size(kp))); } else { info.push_str("K-CAN: (not active)\n"); }
                     if let Some(pp) = p_path { info.push_str(&format!("PT-CAN: {} ({})\n", pp.display(), human_size(pp))); } else { info.push_str("PT-CAN: (not active)\n"); }
+                    if let Some(op) = o_path { info.push_str(&format!("OBD:   {} ({})\n", op.display(), human_size(op))); } else { info.push_str("OBD:   (not active)\n"); }
                     info.push_str("\nPress 'l' to toggle logging.\n");
                     let p = Paragraph::new(info)
                         .block(Block::default().borders(Borders::ALL).title("Logs"));
@@ -561,7 +599,7 @@ async fn run_app(
                         KeyCode::Esc => { app.show_help = false; },
                         KeyCode::Char('?') => { app.show_help = !app.show_help; },
                         KeyCode::Char('/') => { app.input_mode = true; app.input_buf.clear(); },
-                        KeyCode::Char('c') => { app.frames_all.clear(); app.frames_kcan.clear(); app.frames_ptcan.clear(); },
+                        KeyCode::Char('c') => { app.frames_all.clear(); app.frames_kcan.clear(); app.frames_ptcan.clear(); app.frames_obd.clear(); },
                         KeyCode::Char('p') => { app.paused = !app.paused; },
                         KeyCode::Char('l') => { if app.logger.enabled { app.logger.disable(); app.logging=false; } else if app.logger.enable().is_ok() { app.logging=true; } },
                         KeyCode::Tab | KeyCode::Char('\t') | KeyCode::Right => { app.panel = next_panel(app.panel); },
@@ -607,7 +645,8 @@ fn next_bus(b: BusTab) -> BusTab {
     match b {
         BusTab::All => BusTab::KCAN,
         BusTab::KCAN => BusTab::PTCAN,
-        BusTab::PTCAN => BusTab::All,
+        BusTab::PTCAN => BusTab::OBD,
+        BusTab::OBD => BusTab::All,
     }
 }
 
@@ -660,7 +699,7 @@ fn styled_val(s: String, style: Style) -> Cell<'static> {
 }
 
 fn bus_color(bus: BusTab) -> Color {
-    match bus { BusTab::KCAN => Color::Cyan, BusTab::PTCAN => Color::Magenta, BusTab::All => Color::White }
+    match bus { BusTab::KCAN => Color::Cyan, BusTab::PTCAN => Color::Magenta, BusTab::OBD => Color::LightYellow, BusTab::All => Color::White }
 }
 
 fn id_color(id: u32) -> Color {
@@ -690,7 +729,7 @@ fn format_row(ann: &RxAnnot, app: &AppState) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(Span::styled(format!("{:+06.0}ms ", delta_ms), delta_style(ann.delta_us)));
     // bus tag
-    spans.push(Span::styled(match ann.bus { BusTab::KCAN=>"K ", BusTab::PTCAN=>"P ", BusTab::All=>"A "}.to_string(), Style::default().fg(bus_color(ann.bus)).add_modifier(Modifier::BOLD)));
+    spans.push(Span::styled(match ann.bus { BusTab::KCAN=>"K ", BusTab::PTCAN=>"P ", BusTab::OBD=>"O ", BusTab::All=>"A "}.to_string(), Style::default().fg(bus_color(ann.bus)).add_modifier(Modifier::BOLD)));
     // id, dlc
     spans.push(Span::styled(format!("0x{:03X} ", ann.frame.id), Style::default().fg(id_color(ann.frame.id))));
     spans.push(Span::styled(format!("dlc={} ", ann.frame.dlc), if ann.frame.dlc==8 { Style::default() } else { Style::default().fg(Color::Yellow)}));
@@ -708,7 +747,7 @@ fn format_row(ann: &RxAnnot, app: &AppState) -> Line<'static> {
 }
 
 fn compute_annot(app: &mut AppState, bus: BusTab, fr: &Frame) -> (u64, u8) {
-    let map = match bus { BusTab::KCAN => &mut app.last_k, BusTab::PTCAN => &mut app.last_p, BusTab::All => &mut app.last_k };
+    let map = match bus { BusTab::KCAN => &mut app.last_k, BusTab::PTCAN => &mut app.last_p, BusTab::OBD => &mut app.last_o, BusTab::All => &mut app.last_k };
     let (delta, changed) = if let Some((last_ts, last_data)) = map.get(&fr.id).cloned() {
         let d = fr.ts_us.saturating_sub(last_ts);
         let mut mask: u8 = 0;

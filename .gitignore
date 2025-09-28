@@ -29,12 +29,10 @@ target/
 **/target/
 
 # Logs / temp
-logs/
-*.log
+
 out.json
 
 # Env files
 .env
 .env.*
 .envrc
-

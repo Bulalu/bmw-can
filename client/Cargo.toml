@@ -3,6 +3,6 @@ members = [
     "client-core",
     "client-udp",
     "client-tui",
+    "client-decode",
 ]
 resolver = "2"
-

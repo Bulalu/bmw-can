@@ -34,13 +34,6 @@ BS_:
 
 BU_: EON RDC SZL VGSG JBBF RFK FLA RAD1 CAS CID AHM HKL HUD EKP DWA DSC SM_BF GWS VDM DDE1 ACI CCC SM_FA CTM LDM RSE MRSZ VDA EDCK ZBE EGS ACC Kombi IHKA ARS ACSM FZD PGS NVC AFS DME FRMFA EMF FKA VSW EPS PDC DKG SMG EHC SZM KGM Diagnosetool_PT_CAN Diagnosetool_K_CAN_System Vector__XXX XXX
 
-CM_ "Source <https://github.com/dzid26/opendbc-BMW-E8x-E9x>";
-CM_ "Some data copied from https://github.com/HeinrichG-V12/E65_ReverseEngineering/ and MSD81 document"
-CM_ "Tool32 reference https://www.bimmerforums.com/forum/showthread.php?2298830-E90-Can-bus-project-(E60-E65-E87-)&p=29628499#post29628499"
-CM_ "Some data copied from great MK60e5_Development_DBC.dbc: https://www.m5board.com/posts/7693749/"
-
-CM_ "License MIT";
-
 BO_ 128 SYNC: 5 XXX
  SG_ State1 : 16|8@1+ (1,0) [0|255] "" XXX
  SG_ State2 : 24|4@1+ (1,0) [0|15] "" XXX

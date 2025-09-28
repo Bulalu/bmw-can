@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
 use client_core::Frame;
+use client_core::obd::{decode_obd_single_frame, ObdState};
+use client_core::dbc_runtime::{DbcRuntime, DecodedState};
 use client_udp::{run_udp_listener, UdpConfig};
 use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
@@ -98,6 +100,10 @@ struct AppState {
     rpm_hist: Vec<f64>,
     speed_hist: Vec<f64>,
     thr_hist: Vec<f64>,
+    obd: ObdState,
+    dbc: Option<DbcRuntime>,
+    k_state: DecodedState,
+    p_state: DecodedState,
     bus_tab: BusTab,
     last_k: HashMap<u32, (u64, [u8;8])>,
     last_p: HashMap<u32, (u64, [u8;8])>,
@@ -138,6 +144,10 @@ impl AppState {
             rpm_hist: Vec::with_capacity(256),
             speed_hist: Vec::with_capacity(256),
             thr_hist: Vec::with_capacity(256),
+            obd: ObdState::default(),
+            dbc: None,
+            k_state: DecodedState::default(),
+            p_state: DecodedState::default(),
             bus_tab: BusTab::All,
             last_k: HashMap::new(),
             last_p: HashMap::new(),
@@ -298,7 +308,7 @@ async fn main() -> Result<()> {
     } else {
         if args.obd_port != 0 { format!("{} [K:{} | P:{} | O:{}]", args.host, args.kcan_port, args.ptcan_port, args.obd_port) } else { format!("{} [K:{} | P:{}]", args.host, args.kcan_port, args.ptcan_port) }
     };
-    let res = run_app(&mut term, &mut rx, args.tail, status_socket, args.demo, args.log_dir, args.log_format, args.log).await;
+    let res = run_app(&mut term, &mut rx, args.tail, status_socket, args.demo, args.log_dir, args.log_format, args.log, args.dbc.clone()).await;
     disable_raw_mode()?;
     execute!(stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
     term.show_cursor()?;
@@ -321,9 +331,14 @@ async fn run_app(
     log_dir: Option<String>,
     log_format: String,
     start_log: bool,
+    dbc_path: String,
 ) -> Result<()> {
     let mut app = AppState::new(status_socket);
     app.demo = demo_mode;
+    // Attempt to load DBC
+    if !demo_mode {
+        if let Ok(dbc) = DbcRuntime::load(&dbc_path) { app.dbc = Some(dbc); }
+    }
     app.logger.configure(log_dir, &log_format);
     if start_log { let _ = app.logger.enable(); }
     let mut ticker = time::interval(Duration::from_millis(100));
@@ -337,9 +352,9 @@ async fn run_app(
                 let annot = RxAnnot { frame: frame.clone(), delta_us, changed_mask, bus };
                 app.frames_all.push(annot.clone());
                 match bus {
-                    BusTab::KCAN => { app.recv_k += 1; app.frames_kcan.push(annot); if app.frames_kcan.len() > tail_max { let ex = app.frames_kcan.len()-tail_max; app.frames_kcan.drain(0..ex); } },
-                    BusTab::PTCAN => { app.recv_p += 1; app.frames_ptcan.push(annot); if app.frames_ptcan.len() > tail_max { let ex = app.frames_ptcan.len()-tail_max; app.frames_ptcan.drain(0..ex); } },
-                    BusTab::OBD   => { app.recv_o += 1; app.frames_obd.push(annot); if app.frames_obd.len() > tail_max { let ex = app.frames_obd.len()-tail_max; app.frames_obd.drain(0..ex); } },
+                    BusTab::KCAN => { app.recv_k += 1; app.frames_kcan.push(annot); if let Some(dbc)=app.dbc.as_ref() { if let Some(sig)=dbc.decode(&frame) { app.k_state.apply(&sig); } } if app.frames_kcan.len() > tail_max { let ex = app.frames_kcan.len()-tail_max; app.frames_kcan.drain(0..ex); } },
+                    BusTab::PTCAN => { app.recv_p += 1; app.frames_ptcan.push(annot); if let Some(dbc)=app.dbc.as_ref() { if let Some(sig)=dbc.decode(&frame) { app.p_state.apply(&sig); } } if app.frames_ptcan.len() > tail_max { let ex = app.frames_ptcan.len()-tail_max; app.frames_ptcan.drain(0..ex); } },
+                    BusTab::OBD   => { app.recv_o += 1; app.frames_obd.push(annot); if let Some(sample) = decode_obd_single_frame(&frame) { app.obd.apply(&sample); } if app.frames_obd.len() > tail_max { let ex = app.frames_obd.len()-tail_max; app.frames_obd.drain(0..ex); } },
                     BusTab::All => { /* demo */ },
                 }
                 app.logger.write(bus, &frame);
@@ -347,15 +362,23 @@ async fn run_app(
             }
         }
 
-        // Update demo charts regularly (until real DBC wiring)
-        app.tick = app.tick.wrapping_add(1);
-        let t = app.tick as f64;
-        let rpm = (1500.0 + (t * 0.10).sin() * 2000.0 + (t * 0.03).sin() * 500.0).clamp(0.0, 6000.0);
-        let speed = (50.0 + (t * 0.07).sin() * 50.0 + (t * 0.011).cos() * 5.0).clamp(0.0, 200.0);
-        let thr = (50.0 + (t * 0.13).sin() * 40.0).clamp(0.0, 100.0);
-        push_hist(&mut app.rpm_hist, rpm, 200);
-        push_hist(&mut app.speed_hist, speed, 200);
-        push_hist(&mut app.thr_hist, thr, 200);
+        // Update charts using OBD when available; otherwise demo
+        let mut rpm_v = app.obd.rpm;
+        let mut speed_v = app.obd.speed_kph;
+        let mut thr_v = app.obd.throttle_pct;
+        if rpm_v.is_none() || speed_v.is_none() || thr_v.is_none() {
+            app.tick = app.tick.wrapping_add(1);
+            let t = app.tick as f64;
+            let rpm = (1500.0 + (t * 0.10).sin() * 2000.0 + (t * 0.03).sin() * 500.0).clamp(0.0, 6000.0);
+            let speed = (50.0 + (t * 0.07).sin() * 50.0 + (t * 0.011).cos() * 5.0).clamp(0.0, 200.0);
+            let thr = (50.0 + (t * 0.13).sin() * 40.0).clamp(0.0, 100.0);
+            if rpm_v.is_none() { rpm_v = Some(rpm); }
+            if speed_v.is_none() { speed_v = Some(speed); }
+            if thr_v.is_none() { thr_v = Some(thr); }
+        }
+        if let Some(v) = rpm_v { push_hist(&mut app.rpm_hist, v, 200); }
+        if let Some(v) = speed_v { push_hist(&mut app.speed_hist, v, 200); }
+        if let Some(v) = thr_v { push_hist(&mut app.thr_hist, v, 200); }
 
         // Update PPS every second
         if app.last_tick.elapsed() >= Duration::from_secs(1) {

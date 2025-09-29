@@ -5,6 +5,7 @@ use serde::Serialize;
 use client_core::{parse_csv_line, Frame};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Parser)]
 #[command(name = "client-decode", about = "Decode CSV log via DBC")]
@@ -27,6 +28,12 @@ struct Args {
     /// Dump decoded values keyed by CAN ID from a CSV log to JSON and exit
     #[arg(long)]
     dump_values_json: Option<String>,
+    /// Filter map JSON: { "0xID": ["SignalA","SignalB"], ... } — when set, only those signals are included per ID
+    #[arg(long)]
+    filter_map: Option<String>,
+    /// Downsample rate in Hz per ID (e.g., 2 for ~2 samples/sec). 0 disables downsampling.
+    #[arg(long, default_value_t = 0.0)]
+    rate_hz: f64,
 }
 
 fn main() -> Result<()> {
@@ -43,6 +50,13 @@ fn main() -> Result<()> {
     // Optional decoded dump accumulator
     let mut dump_acc: Option<std::collections::HashMap<u32, Vec<DumpEntry>>> =
         args.dump_values_json.as_ref().map(|_| std::collections::HashMap::new());
+    // Optional filter map
+    let filter_map = if let Some(path) = &args.filter_map {
+        Some(load_filter_map(path)?)
+    } else { None };
+    // Downsample period in microseconds
+    let period_us: u64 = if args.rate_hz > 0.0 { (1_000_000.0/args.rate_hz).round() as u64 } else { 0 };
+    let mut last_emit: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
 
     let mut id_seen: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
     for line in reader.lines() {
@@ -55,13 +69,31 @@ fn main() -> Result<()> {
             Err(_) => continue,
         };
         *id_seen.entry(fr.id).or_insert(0) += 1;
-        if let Some(sigs) = rt.decode(&fr) {
-            if let Some(ref mut acc) = dump_acc {
+        if let Some(mut sigs) = rt.decode(&fr) {
+            // Apply name filter for console printing
+            if dump_acc.is_none() {
+                print_decoded(&fr, &sigs, filt.as_deref());
+            } else {
+                // Build signal map and apply filter-map if present
                 let mut m = std::collections::HashMap::new();
                 for s in &sigs { m.insert(s.name.clone(), s.value); }
-                acc.entry(fr.id).or_default().push(DumpEntry { ts_us: fr.ts_us, signals: m });
-            } else {
-                print_decoded(&fr, &sigs, filt.as_deref());
+                if let Some(fm) = &filter_map {
+                    if let Some(keep) = fm.get(&fr.id) {
+                        m.retain(|k,_| keep.contains(k));
+                    } else {
+                        // If filter map provided but no entry for this ID, drop entirely
+                        m.clear();
+                    }
+                }
+                if !m.is_empty() {
+                    // Rate limit per ID
+                    if period_us > 0 {
+                        let le = last_emit.get(&fr.id).copied().unwrap_or(0);
+                        if fr.ts_us < le + period_us { continue; }
+                        last_emit.insert(fr.id, fr.ts_us);
+                    }
+                    if let Some(ref mut acc) = dump_acc { acc.entry(fr.id).or_default().push(DumpEntry { ts_us: fr.ts_us, signals: m }); }
+                }
             }
         }
     }
@@ -170,4 +202,32 @@ fn write_values_json(
     std::fs::write(path, serde_json::to_vec_pretty(&serde_json::Value::Object(root))?)?;
     eprintln!("Wrote decoded values to {}", path);
     Ok(())
+}
+
+fn parse_id_key(s: &str) -> Option<u32> {
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u32::from_str_radix(hex, 16).ok()
+    } else {
+        s.parse::<u32>().ok()
+    }
+}
+
+fn load_filter_map(path: &str) -> Result<HashMap<u32, HashSet<String>>> {
+    let text = std::fs::read_to_string(path)?;
+    let v: serde_json::Value = serde_json::from_str(&text)?;
+    let mut out: HashMap<u32, HashSet<String>> = HashMap::new();
+    if let Some(obj) = v.as_object() {
+        for (k, arr) in obj.iter() {
+            if let Some(id) = parse_id_key(k) {
+                let mut set = HashSet::new();
+                if let Some(a) = arr.as_array() {
+                    for itm in a {
+                        if let Some(name) = itm.as_str() { set.insert(name.to_string()); }
+                    }
+                }
+                out.insert(id, set);
+            }
+        }
+    }
+    Ok(out)
 }

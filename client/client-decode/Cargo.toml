@@ -7,4 +7,6 @@ edition = "2021"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 client-core = { path = "../client-core" }
-
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+can-dbc = "4"

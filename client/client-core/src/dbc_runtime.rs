@@ -15,7 +15,7 @@ impl DbcRuntime {
     pub fn load(path: &str) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading DBC at {}", path))?;
-        // Build ID list by scanning BO_ lines
+        // Build ID/name list by scanning BO_ lines from raw text
         let mut ids: Vec<u32> = Vec::new();
         let mut names: Vec<String> = Vec::new();
         for line in text.lines() {
@@ -25,16 +25,34 @@ impl DbcRuntime {
                 if parts.len() >= 2 {
                     if let Ok(id) = parts[1].parse::<u32>() { ids.push(id); }
                     // Name token may be at parts[2]
-                    if parts.len() >= 3 { names.push(parts[2].to_string()); } else { names.push(String::new()); }
+                    if parts.len() >= 3 {
+                        let mut nm = parts[2].to_string();
+                        if nm.ends_with(':') { nm.pop(); }
+                        names.push(nm);
+                    } else { names.push(String::new()); }
                 }
             }
         }
         let dbc = can_dbc::DBC::from_str(&text).map_err(|e| anyhow!("DBC parse error: {:?}", e))?;
+        // Build message-name -> index map from parsed DBC
+        let mut name_to_idx: HashMap<String, usize> = HashMap::new();
+        for (idx, m) in dbc.messages().iter().enumerate() {
+            let nm = m.message_name().to_string();
+            name_to_idx.insert(nm, idx);
+        }
         let mut by_id = HashMap::new();
         let mut name_by_id = HashMap::new();
-        for (idx, _m) in dbc.messages().iter().enumerate() {
-            if let Some(id) = ids.get(idx) { by_id.insert(*id, idx); }
-            if let (Some(id), Some(n)) = (ids.get(idx), names.get(idx)) { name_by_id.insert(*id, n.clone()); }
+        for (i, id) in ids.iter().enumerate() {
+            if let Some(nm) = names.get(i) {
+                if let Some(idx) = name_to_idx.get(nm) {
+                    by_id.insert(*id, *idx);
+                    name_by_id.insert(*id, nm.clone());
+                } else if let Some(msg) = dbc.messages().get(i) {
+                    // Fallback: assume same ordering between BO_ and parser
+                    by_id.insert(*id, i);
+                    name_by_id.insert(*id, msg.message_name().to_string());
+                }
+            }
         }
         Ok(Self { dbc, by_id, name_by_id })
     }
@@ -84,17 +102,20 @@ fn extract_le_bits(data: &[u8;8], start_bit: usize, len: usize) -> Option<u64> {
 }
 
 fn extract_be_bits(data: &[u8;8], start_bit: usize, len: usize) -> Option<u64> {
-    // Big-endian (Motorola) bit numbering per DBC: start_bit points to the MSB of the signal
-    // within a 64-bit big-endian view. Translate to a linear index over a big-endian bitstring.
+    // Big-endian (Motorola) per DBC: within each byte, bits are numbered from MSB(7) to LSB(0).
+    // The start_bit points to the MSB of the signal in this numbering.
+    // Build a BE 64-bit value, then compute the absolute position of the signal's MSB.
     let mut acc: u64 = 0;
     for i in 0..8 { acc = (acc << 8) | data[i] as u64; }
-    // In DBC, start_bit is counted from the start of the 64-bit message (byte0 bit7 = index 7).
-    // Translate to a shift from the MSB side.
-    let msb_index = 63 - start_bit;
-    if len == 0 || msb_index + 1 < len { return None; }
-    let shift = (msb_index + 1) - len;
+    if len == 0 || len > 64 { return None; }
+    let byte = start_bit / 8;
+    let bit_in_byte = start_bit % 8; // 0..7, where 7 is MSB in DBC Motorola notation
+    // Position from the MSB side of the 64-bit word (0..63), where 0 is MSB of acc.
+    let pos_from_msb = byte * 8 + (7 - bit_in_byte);
+    if pos_from_msb + 1 < len { return None; }
+    let shift = 63usize.saturating_sub(pos_from_msb) + (len - 1);
     let mask = if len == 64 { u64::MAX } else { (1u64 << len) - 1 };
-    Some((acc >> shift) & mask)
+    Some((acc >> (63 - pos_from_msb - (len - 1))) & mask)
 }
 
 fn unit_opt(u: &String) -> Option<String> { if u.is_empty() { None } else { Some(u.clone()) } }

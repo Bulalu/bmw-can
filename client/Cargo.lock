@@ -193,8 +193,11 @@ name = "client-decode"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "can-dbc",
  "clap",
  "client-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

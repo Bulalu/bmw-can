@@ -32,6 +32,12 @@ struct Args {
     /// Dump decoded OBD Mode01 values to JSON (grouped by signal name)
     #[arg(long)]
     dump_obd_json: Option<String>,
+    /// Create unified export (PT-CAN filtered + OBD) to a single JSON file
+    #[arg(long)]
+    unify_out: Option<String>,
+    /// Session ID to embed in unified export
+    #[arg(long, default_value = "session-unknown")]
+    session_id: String,
     /// Dump decoded values keyed by CAN ID from a CSV log to JSON and exit
     #[arg(long)]
     dump_values_json: Option<String>,
@@ -54,6 +60,20 @@ fn main() -> Result<()> {
     if let Some(path) = &args.dump_obd_json {
         let obd_path = args.obd_input.clone().unwrap_or(args.input.clone());
         dump_obd_values(&obd_path, path)?;
+        return Ok(());
+    }
+
+    if let Some(path) = &args.unify_out {
+        let obd_path = args.obd_input.clone();
+        unify_export(
+            &args.session_id,
+            &args.input,
+            &args.dbc,
+            args.filter_map.as_deref(),
+            args.rate_hz,
+            obd_path.as_deref(),
+            path,
+        )?;
         return Ok(());
     }
     let fp = File::open(&args.input).with_context(|| format!("open {}", &args.input))?;
@@ -266,4 +286,144 @@ fn load_filter_map(path: &str) -> Result<HashMap<u32, HashSet<String>>> {
         }
     }
     Ok(out)
+}
+
+#[derive(Serialize)]
+struct UnifiedValue {
+    ts_us: u64,
+    signal_key: String,
+    value: f64,
+    unit: String,
+    source: String,
+    bus_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")] can_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")] ecu_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")] origin: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct UnifiedExport { session_id: String, values: Vec<UnifiedValue> }
+
+fn unify_export(
+    session_id: &str,
+    ptcan_input: &str,
+    dbc_path: &str,
+    filter_map_path: Option<&str>,
+    rate_hz: f64,
+    obd_input: Option<&str>,
+    out: &str,
+) -> Result<()> {
+    let dbc = DbcRuntime::load(dbc_path)?;
+    let filter_map = if let Some(p) = filter_map_path { Some(load_filter_map(p)?) } else { None };
+    let period_us: u64 = if rate_hz > 0.0 { (1_000_000.0/rate_hz).round() as u64 } else { 0 };
+    let mut last_emit: HashMap<u32, u64> = HashMap::new();
+    let mut out_vals: Vec<UnifiedValue> = Vec::new();
+
+    // PT-CAN path
+    let fp = File::open(ptcan_input).with_context(|| format!("open {}", ptcan_input))?;
+    let reader = BufReader::new(fp);
+    for line in reader.lines() {
+        let line = line?; if line.trim().is_empty() { continue; }
+        let fr: Frame = match parse_csv_line(&line) { Ok(f)=>f, Err(_)=>continue };
+        if period_us > 0 {
+            let le = last_emit.get(&fr.id).copied().unwrap_or(0);
+            if fr.ts_us < le + period_us { continue; }
+            last_emit.insert(fr.id, fr.ts_us);
+        }
+        if let Some(sigs) = dbc.decode(&fr) {
+            for s in sigs {
+                // Apply filter-map
+                if let Some(fm) = &filter_map {
+                    if let Some(keep) = fm.get(&fr.id) {
+                        if !keep.contains(&s.name) { continue; }
+                    } else { continue; }
+                }
+                let key = canonical_key_dbc(&s.name);
+                let unit = s.unit.clone().unwrap_or_default();
+                out_vals.push(UnifiedValue {
+                    ts_us: fr.ts_us,
+                    signal_key: key,
+                    value: s.value,
+                    unit,
+                    source: "PTCAN".into(),
+                    bus_id: "ptcan".into(),
+                    can_id: Some(fr.id),
+                    ecu_id: None,
+                    origin: Some(serde_json::json!({"dbc_signal": s.name})),
+                });
+            }
+        }
+    }
+
+    // OBD path (optional) — always decode but skip overlapping signals (rpm/speed)
+    if let Some(obd_file) = obd_input {
+        let fp = File::open(obd_file).with_context(|| format!("open {}", obd_file))?;
+        let reader = BufReader::new(fp);
+        for line in reader.lines() {
+            let line = line?; if line.trim().is_empty() { continue; }
+            let fr: Frame = match parse_csv_line(&line) { Ok(f)=>f, Err(_)=>continue };
+            if let Some(s) = decode_obd_single_frame(&fr) {
+                let key = canonical_key_obd(s.name);
+                // Skip OBD rpm/speed to avoid duplicates
+                if key == "engine_speed_rpm" || key == "vehicle_speed_kph" { continue; }
+                out_vals.push(UnifiedValue {
+                    ts_us: s.ts_us,
+                    signal_key: key,
+                    value: s.value,
+                    unit: s.unit.into(),
+                    source: "OBD".into(),
+                    bus_id: "obd".into(),
+                    can_id: None,
+                    ecu_id: Some(format!("0x{:03X}", fr.id)),
+                    origin: Some(serde_json::json!({"pid": format!("0x{:02X}", s.pid)})),
+                });
+            }
+        }
+    }
+
+    let exp = UnifiedExport { session_id: session_id.to_string(), values: out_vals };
+    std::fs::write(out, serde_json::to_vec_pretty(&exp)?)?;
+    eprintln!("Wrote unified export to {}", out);
+    Ok(())
+}
+
+fn canonical_key_dbc(sig: &str) -> String {
+    match sig {
+        "VehicleSpeed" => "vehicle_speed_kph".into(),
+        "YawRate" => "yaw_rate_dps".into(),
+        "LatlAcc" => "lat_acc_ms2".into(),
+        "LongAcc" => "long_acc_ms2".into(),
+        "Wheel_FL" => "wheel_speed_fl_kph".into(),
+        "Wheel_FR" => "wheel_speed_fr_kph".into(),
+        "Wheel_RL" => "wheel_speed_rl_kph".into(),
+        "Wheel_RR" => "wheel_speed_rr_kph".into(),
+        "EngineSpeed" => "engine_speed_rpm".into(),
+        "AcceleratorPedalPercentage" => "accel_pedal_pct".into(),
+        "TORQ_AVL_MAX" => "torque_available_max_nm".into(),
+        "TORQ_AVL_MIN" => "torque_available_min_nm".into(),
+        "GearRatio" => "gear_ratio".into(),
+        "GearTar" => "gear_target".into(),
+        "OutputShaftSpeed" => "output_shaft_speed_rpm".into(),
+        "Shifting" => "shifting_state".into(),
+        "TEMP_ENG" => "engine_temp_c".into(),
+        _ => sig.to_lowercase(),
+    }
+}
+
+fn canonical_key_obd(name: &str) -> String {
+    match name {
+        "rpm" => "engine_speed_rpm".into(),
+        "vehicle_speed" => "vehicle_speed_kph".into(),
+        "coolant_temp" => "coolant_temp_c".into(),
+        "fuel_level" => "fuel_level_pct".into(),
+        "module_voltage" => "module_voltage_v".into(),
+        "engine_load" => "engine_load_pct".into(),
+        "throttle" => "throttle_pct".into(),
+        "intake_air_temp" => "intake_air_temp_c".into(),
+        "stft_b1" => "stft_b1_pct".into(),
+        "ltft_b1" => "ltft_b1_pct".into(),
+        "baro" => "baro_kpa".into(),
+        "run_time" => "run_time_s".into(),
+        _ => name.to_string(),
+    }
 }

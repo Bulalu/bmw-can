@@ -1,0 +1,9 @@
+{
+  "0x0A9": ["TORQ_AVL_MAX", "TORQ_AVL_MIN"],
+  "0x0AA": ["EngineSpeed", "AcceleratorPedalPercentage"],
+  "0x0BA": ["GearRatio", "GearTar", "OutputShaftSpeed", "Shifting"],
+  "0x0CE": ["Wheel_FL", "Wheel_FR", "Wheel_RL", "Wheel_RR"],
+  "0x1A0": ["LatlAcc", "LongAcc", "VehicleSpeed", "YawRate"],
+  "0x1D0": ["TEMP_ENG"]
+}
+

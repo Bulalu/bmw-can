@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use client_core::dbc_runtime::{DbcRuntime, DecodedSignal};
+use client_core::obd::{decode_obd_single_frame, ObdState};
 use serde::Serialize;
 use client_core::{parse_csv_line, Frame};
 use std::fs::File;
@@ -25,6 +26,12 @@ struct Args {
     /// Dump DBC mapping (ID -> message + signals) to a JSON file and exit
     #[arg(long)]
     dump_dbc_json: Option<String>,
+    /// Optional OBD log path (defaults to --input if not set)
+    #[arg(long)]
+    obd_input: Option<String>,
+    /// Dump decoded OBD Mode01 values to JSON (grouped by signal name)
+    #[arg(long)]
+    dump_obd_json: Option<String>,
     /// Dump decoded values keyed by CAN ID from a CSV log to JSON and exit
     #[arg(long)]
     dump_values_json: Option<String>,
@@ -41,6 +48,12 @@ fn main() -> Result<()> {
     let rt = DbcRuntime::load(&args.dbc).context("load DBC")?;
     if let Some(path) = &args.dump_dbc_json {
         dump_dbc_json(&rt, path)?;
+        return Ok(());
+    }
+
+    if let Some(path) = &args.dump_obd_json {
+        let obd_path = args.obd_input.clone().unwrap_or(args.input.clone());
+        dump_obd_values(&obd_path, path)?;
         return Ok(());
     }
     let fp = File::open(&args.input).with_context(|| format!("open {}", &args.input))?;
@@ -174,6 +187,29 @@ fn print_decoded(fr: &Frame, sigs: &[DecodedSignal], filt: Option<&str>) {
             println!("0x{:03X} {} = {:.3}", id, s.name, s.value);
         }
     }
+}
+
+#[derive(Serialize)]
+struct ObdEntry { ts_us: u64, value: f64, unit: String, ecu_id: String, pid: String }
+
+fn dump_obd_values(input: &str, out: &str) -> Result<()> {
+    let fp = File::open(input).with_context(|| format!("open {}", input))?;
+    let reader = BufReader::new(fp);
+    let mut map: std::collections::BTreeMap<String, Vec<ObdEntry>> = std::collections::BTreeMap::new();
+    for line in reader.lines() {
+        let line = line?; if line.trim().is_empty() { continue; }
+        let fr: Frame = match parse_csv_line(&line) { Ok(f)=>f, Err(_)=>continue };
+        if let Some(s) = decode_obd_single_frame(&fr) {
+            let key = s.name.to_string();
+            let ecu = format!("0x{:03X}", fr.id);
+            let pid = format!("0x{:02X}", s.pid);
+            map.entry(key).or_default().push(ObdEntry { ts_us: s.ts_us, value: s.value, unit: s.unit.to_string(), ecu_id: ecu, pid });
+        }
+    }
+    let json = serde_json::to_vec_pretty(&map)?;
+    std::fs::write(out, json)?;
+    eprintln!("Wrote OBD values to {}", out);
+    Ok(())
 }
 
 #[derive(Serialize)]
